@@ -1,0 +1,36 @@
+# Локальные клоны библиотек-кандидатов (lomse, verovio; статус — docs/backlog.md OQ-09)
+libs/
+
+# Музыка и данные экспериментов (записи, эталонные MIDI)
+data/
+
+# Каталоги сборки и кэши
+basicpitch/build/
+basicpitch/src/basicpitch.cpp/build/
+basicpitch/src/midi2musicxml/build/
+basicpitch/src/libv2m/build/
+app/**/build/
+app/.gradle/
+app/.kotlin/
+
+# Vendor-зависимости upstream basicpitch.cpp (onnxruntime ~580 МБ и др.).
+# Для сборки с нуля: склонировать https://github.com/sevagh/basicpitch.cpp
+# с субмодулями и скопировать его vendor/ в basicpitch/src/basicpitch.cpp/vendor/
+basicpitch/src/basicpitch.cpp/vendor/
+
+# IDE
+.idea/
+*.iml
+
+# Временные файлы
+*.tmp
+
+# Каталог сборки внутри клона (собирался upstream-код)
+basicpitch/src/basicpitch.cpp/CMakeFiles/
+basicpitch/src/basicpitch.cpp/CMakeCache.txt
+basicpitch/src/basicpitch.cpp/cmake_install.cmake
+basicpitch/src/basicpitch.cpp/Makefile
+basicpitch/src/basicpitch.cpp/basicpitch
+
+# артефакты cmake upstream
+basicpitch/src/basicpitch.cpp/CTestTestfile.cmake
