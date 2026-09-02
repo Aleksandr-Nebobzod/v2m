@@ -45,6 +45,105 @@ fun buildParamsJson(wavName: String, p: V2mEngine.Params, report: String, key: K
             "\"key\":${s(key?.name ?: "")},\"report\":${s(report)}}"
 }
 
+/** Make note events well-formed: a note may start (Note-on) only when it is
+ *  not already sounding, and may end (Note-off / Note-on with velocity 0)
+ *  only when it is sounding. The engine can emit a repeated Note-on of a
+ *  sounding pitch and a Note-off of a silent pitch when harmonize-merge
+ *  stitches fragments; MuseScore misreads the tempo of such files (e.g. 95
+ *  BPM shown as 119). Other events are copied verbatim, with full status
+ *  bytes (no running status). Returns the input unchanged if it is not a
+ *  valid SMF. */
+fun normalizeMidi(midi: ByteArray): ByteArray {
+    if (midi.size < 14 || midi[0] != 'M'.code.toByte() || midi[1] != 'T'.code.toByte() ||
+        midi[2] != 'h'.code.toByte() || midi[3] != 'd'.code.toByte()) return midi
+    val hlen = ((midi[4].toInt() and 0xFF) shl 24) or ((midi[5].toInt() and 0xFF) shl 16) or
+        ((midi[6].toInt() and 0xFF) shl 8) or (midi[7].toInt() and 0xFF)
+    if (hlen < 6 || 8 + hlen > midi.size) return midi
+    val ntrks = ((midi[10].toInt() and 0xFF) shl 8) or (midi[11].toInt() and 0xFF)
+    if (ntrks == 0) return midi
+
+    val out = ByteArrayOutputStream()
+    out.write(midi, 0, 8 + hlen) // header unchanged
+
+    var p = 8 + hlen
+    for (t in 0 until ntrks) {
+        if (p + 8 > midi.size) return midi
+        if (midi[p] != 'M'.code.toByte() || midi[p + 1] != 'T'.code.toByte() ||
+            midi[p + 2] != 'r'.code.toByte() || midi[p + 3] != 'k'.code.toByte()) return midi
+        val tlen = ((midi[p + 4].toInt() and 0xFF) shl 24) or ((midi[p + 5].toInt() and 0xFF) shl 16) or
+            ((midi[p + 6].toInt() and 0xFF) shl 8) or (midi[p + 7].toInt() and 0xFF)
+        p += 8
+        val end = p + tlen
+        if (end > midi.size) return midi
+        val body = ByteArrayOutputStream()
+        val active = HashSet<Int>() // (channel shl 8) or pitch
+        var running = 0
+        while (p < end) {
+            val deltaStart = p
+            while (p < end && (midi[p].toInt() and 0x80) != 0) p++
+            if (p >= end) break
+            p++ // last delta byte
+            var st = midi[p].toInt() and 0xFF
+            val stPos = p
+            if (st and 0x80 == 0) {
+                if (running == 0) break
+                st = running // data byte reused as status: the note data starts here
+            } else {
+                running = st
+                p++
+            }
+            val dataStart = p
+            val type = st and 0xF0
+            val chan = st and 0x0F
+            var drop = false
+            when (type) {
+                0x80, 0x90 -> {
+                    val note = midi[p].toInt() and 0xFF
+                    val vel = midi[p + 1].toInt() and 0xFF
+                    val key = (chan shl 8) or note
+                    if (type == 0x90 && vel > 0) drop = !active.add(key) // repeated attack
+                    else drop = !active.remove(key) // stray release
+                    p += 2
+                }
+                0xA0, 0xB0, 0xE0 -> p += 2
+                0xC0, 0xD0 -> p += 1
+                0xF0 -> {
+                    if (st == 0xFF) p++ // meta type byte
+                    var ml = 0
+                    while (p < end && (midi[p].toInt() and 0x80) != 0) {
+                        ml = (ml shl 7) or (midi[p].toInt() and 0x7F)
+                        p++
+                    }
+                    if (p >= end) break
+                    ml = (ml shl 7) or (midi[p].toInt() and 0x7F)
+                    p++
+                    p += ml
+                }
+                else -> {} // 0xF1..0xF6 system messages: no data
+            }
+            if (p > end) break
+            if (!drop) {
+                if (stPos == dataStart) { // running status: re-insert the full status
+                    body.write(midi, deltaStart, dataStart - deltaStart)
+                    body.write(st)
+                    body.write(midi, dataStart, p - dataStart)
+                } else {
+                    body.write(midi, deltaStart, p - deltaStart)
+                }
+            }
+        }
+        body.write(0x00) // delta-time before end-of-track
+        body.write(0xFF); body.write(0x2F); body.write(0x00)
+        out.write('M'.code); out.write('T'.code); out.write('r'.code); out.write('k'.code)
+        val len = body.size()
+        out.write((len shr 24) and 0xFF); out.write((len shr 16) and 0xFF)
+        out.write((len shr 8) and 0xFF); out.write(len and 0xFF)
+        out.write(body.toByteArray())
+        p = end
+    }
+    return out.toByteArray()
+}
+
 /** Append an extra track with a Sequencer Specific meta event (FF 7F)
  *  carrying the JSON; returns a new valid SMF file. */
 fun midiWithMetaTrack(midi: ByteArray, json: String): ByteArray {

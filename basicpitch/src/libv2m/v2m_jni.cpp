@@ -1,7 +1,7 @@
 // JNI bridge: Kotlin (com.v2m.app.V2mEngine) -> v2m C library.
 // Compiled into libv2m.so only (not into the CLI static link).
-// Params are passed as a fixed 16-element double array (see V2mParams order
-// in v2m.h: 15 knobs + verbose).
+// Params are passed as a fixed 18-element double array (see V2mParams order
+// in v2m.h: 17 knobs + verbose).
 #include <jni.h>
 #include <cstdio>
 #include <cstring>
@@ -99,6 +99,11 @@ static V2mParams params_from_doubles(JNIEnv *env, jdoubleArray arr)
         p.min_bend_bins = static_cast<int>(d[12]);
         p.global_shift = static_cast<float>(d[13]);
         p.mode_snap = static_cast<float>(d[14]);
+        if (n >= 18)
+        {
+            p.time_sig_num = static_cast<int>(d[16]);
+            p.time_sig_den = static_cast<int>(d[17]);
+        }
         p.verbose = static_cast<int>(d[15]);
         env->ReleaseDoubleArrayElements(arr, d, JNI_ABORT);
     }
@@ -124,16 +129,17 @@ Java_com_v2m_app_V2mEngine_nativeParamsDefault(JNIEnv *env, jobject)
 {
     V2mParams p;
     v2m_params_default(&p);
-    const jdouble d[16] = {
+    const jdouble d[18] = {
         p.onset_threshold, p.frame_threshold,  p.min_note_len,
         p.energy_tol,      p.program,          p.velocity_compress,
         p.use_melodia_trick, p.include_pitch_bends,
         p.tempo_bpm,       p.quantize,         p.tolerance_ms,
         p.harmonize_merge, p.min_bend_bins,    p.global_shift,
         p.mode_snap,       p.verbose,
+        p.time_sig_num,    p.time_sig_den,
     };
-    jdoubleArray out = env->NewDoubleArray(16);
-    env->SetDoubleArrayRegion(out, 0, 16, d);
+    jdoubleArray out = env->NewDoubleArray(18);
+    env->SetDoubleArrayRegion(out, 0, 18, d);
     return out;
 }
 
@@ -180,7 +186,8 @@ Java_com_v2m_app_V2mEngine_nativeLastReport(JNIEnv *env, jobject)
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_v2m_app_V2mEngine_nativeMidiToMusicXml(JNIEnv *env, jobject,
                                                 jbyteArray midi,
-                                                jstring path)
+                                                jstring path,
+                                                jint clef)
 {
     const jsize len = env->GetArrayLength(midi);
     jbyte *mb = env->GetByteArrayElements(midi, nullptr);
@@ -188,7 +195,7 @@ Java_com_v2m_app_V2mEngine_nativeMidiToMusicXml(JNIEnv *env, jobject,
     char *err = nullptr;
     const int ok = v2m_midi_to_musicxml(
         reinterpret_cast<const uint8_t *>(mb), static_cast<size_t>(len), p,
-        &err);
+        clef, &err);
     env->ReleaseStringUTFChars(path, p);
     env->ReleaseByteArrayElements(midi, mb, JNI_ABORT);
     if (!ok)

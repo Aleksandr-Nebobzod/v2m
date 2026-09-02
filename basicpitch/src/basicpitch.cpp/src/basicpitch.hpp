@@ -72,6 +72,8 @@ struct RhythmParams
     float tempo_bpm = 0.0f; // 0 = auto-detect
     int quantize = 0;       // 0 = off, 1 = auto, 2 = beat, 3 = eighth, 4 = sixteenth
     float tolerance_ms = 40.0f;
+    int time_sig_num = 0;   // 0 = auto-detect
+    int time_sig_den = 0;   // 0 = auto-detect
 };
 
 // Harmonization params; defaults keep the original behavior
@@ -97,8 +99,12 @@ struct RhythmResult
 {
     float tempo_bpm = 0.0f;      // 0 = rhythm processing not applied
     std::vector<float> beats_s;  // beat times in seconds
+    float grid_anchor = 0.0f;    // first grid point (0 = first beat); the
+                                 // first note anchors the grid so no leading
+                                 // rest appears before the first note
     int subdivision = 0;         // grid division used (0 = none)
-    int ts_numerator = 0;        // detected time signature numerator (0 = none)
+    int ts_numerator = 0;        // time signature numerator (0 = none)
+    int ts_denominator = 0;      // time signature denominator (0 = none)
 };
 
 // Tempo estimation and grid selection (Ellis-style), see rhythm.cpp.

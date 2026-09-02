@@ -278,6 +278,35 @@ static CliOptions parse_cli_options(int argc, const char **argv, int &i)
             }
             opts.rhythm.tolerance_ms = value;
         }
+        else if (arg == "--time-signature")
+        {
+            const std::string value = require_value("--time-signature");
+            const size_t slash = value.find('/');
+            const std::string num_s = value.substr(0, slash);
+            const std::string den_s =
+                slash == std::string::npos ? "4" : value.substr(slash + 1);
+            try
+            {
+                opts.rhythm.time_sig_num = std::stoi(num_s);
+                opts.rhythm.time_sig_den = std::stoi(den_s);
+            }
+            catch (const std::exception &)
+            {
+                std::cerr << "Invalid value for option --time-signature"
+                          << std::endl;
+                exit(1);
+            }
+            if (opts.rhythm.time_sig_num < 1 ||
+                opts.rhythm.time_sig_num > 32 ||
+                opts.rhythm.time_sig_den < 1 ||
+                opts.rhythm.time_sig_den > 64)
+            {
+                std::cerr << "Option --time-signature must be N/D with "
+                             "N in [1, 32], D in [1, 64] (e.g. 2/4)"
+                          << std::endl;
+                exit(1);
+            }
+        }
         else if (arg == "--velocity-compress")
         {
             float value = 0.0f;
@@ -482,6 +511,9 @@ int main(int argc, const char **argv)
         std::cerr << "  --tempo-tolerance <ms>    snap tolerance for quantization "
                      "(default: 40)"
                   << std::endl;
+        std::cerr << "  --time-signature <N/D>    manual time signature, e.g. "
+                     "2/4 (default: auto-detect)"
+                  << std::endl;
         std::cerr << "  --velocity-compress <0..1> dynamics compression of note "
                      "velocity (default: 0)"
                   << std::endl;
@@ -562,6 +594,8 @@ int main(int argc, const char **argv)
     vp.tempo_bpm = opts.rhythm.tempo_bpm;
     vp.quantize = opts.rhythm.quantize;
     vp.tolerance_ms = opts.rhythm.tolerance_ms;
+    vp.time_sig_num = opts.rhythm.time_sig_num;
+    vp.time_sig_den = opts.rhythm.time_sig_den;
     vp.harmonize_merge = opts.harmonize.merge_semitones;
     vp.min_bend_bins = opts.harmonize.min_bend_bins;
     vp.global_shift = opts.harmonize.global_shift;

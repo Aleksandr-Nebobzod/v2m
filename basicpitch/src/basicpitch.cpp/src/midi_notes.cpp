@@ -406,17 +406,22 @@ note_events_to_midi(const std::vector<basic_pitch::NoteEvent> &note_events,
     meta_track.emplace_back(0, 0, libremidi::meta_events::tempo(tempo_us));
     meta_track.emplace_back(
         0, 0,
-        libremidi::meta_events::time_signature(ts_num,
-                                               TIME_SIGNATURE_DENOMINATOR));
+        libremidi::meta_events::time_signature(
+            ts_num, rhythm_on && rhythm_result.ts_denominator > 0
+                        ? rhythm_result.ts_denominator
+                        : TIME_SIGNATURE_DENOMINATOR));
     midi_writer.tracks.push_back(meta_track);
 
     // Calculate frame times for each note onset
     std::vector<float> frame_times = model_frames_to_time(n_times_onsets);
 
-    // Rhythm grid for snapping note boundaries (empty when rhythm is off)
+    // Rhythm grid for snapping note boundaries (empty when rhythm is off).
+    // The grid starts at the first note, and tick time 0 is its first point —
+    // so the first note opens the file (no leading rest in the output).
     const std::vector<float> grid =
         rhythm_result.subdivision > 0 ? basic_pitch::rhythm_grid(rhythm_result)
                                       : std::vector<float>{};
+    const float grid_origin = grid.empty() ? 0.0f : grid.front();
     auto snap_to_grid = [&grid](float t) -> float
     {
         if (grid.empty())
@@ -454,6 +459,8 @@ note_events_to_midi(const std::vector<basic_pitch::NoteEvent> &note_events,
     {
         float start_time = snap_to_grid(frame_times[start_idx]);
         float end_time = snap_to_grid(frame_times[end_idx]);
+        start_time -= grid_origin; // ticks count from the first grid point
+        end_time -= grid_origin;
         uint32_t start_tick = time_to_ticks(start_time, tempo_us, tpqn);
         uint32_t end_tick = time_to_ticks(end_time, tempo_us, tpqn);
         int velocity = static_cast<int>(amplitude * 127);
@@ -688,7 +695,9 @@ std::vector<uint8_t> basic_pitch::convert_to_midi(
                     : TIME_SIGNATURE_NUMERATOR;
             log_verbose("tempo: " + std::to_string(rhythm_result.tempo_bpm) +
                         " BPM, time signature " + std::to_string(ts_num) + "/" +
-                        std::to_string(TIME_SIGNATURE_DENOMINATOR) +
+                        std::to_string(rhythm_result.ts_denominator > 0
+                                          ? rhythm_result.ts_denominator
+                                          : TIME_SIGNATURE_DENOMINATOR) +
                         ", subdivision " +
                         std::to_string(rhythm_result.subdivision));
         }

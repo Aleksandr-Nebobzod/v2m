@@ -80,6 +80,8 @@ int v2m_params_default(V2mParams *out)
     out->tempo_bpm = 0.0f;
     out->quantize = 0;
     out->tolerance_ms = 40.0f;
+    out->time_sig_num = 0;
+    out->time_sig_den = 0;
     out->harmonize_merge = 0;
     out->min_bend_bins = 0;
     out->global_shift = 0.0f;
@@ -118,6 +120,8 @@ int v2m_transcribe(const float *pcm, int n_samples, int sample_rate,
         rp.tempo_bpm = params->tempo_bpm;
         rp.quantize = params->quantize;
         rp.tolerance_ms = params->tolerance_ms;
+        rp.time_sig_num = params->time_sig_num;
+        rp.time_sig_den = params->time_sig_den;
 
         basic_pitch::HarmonizeParams hp;
         hp.merge_semitones = params->harmonize_merge;

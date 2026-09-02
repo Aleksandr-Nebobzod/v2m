@@ -97,8 +97,31 @@ static float estimate_tempo_bpm(const std::vector<float> &oss, float frame_rate,
     {
         return 0.0f;
     }
-    return 60.0f * frame_rate /
-           static_cast<float>(best_it - score.begin());
+    const int best_lag = static_cast<int>(best_it - score.begin());
+
+    // Octave correction (Ellis 2007): a signal with strong half-period
+    // pulsation (e.g. eighths) peaks at twice the beat rate. If the octave-
+    // lower lag still correlates well, report the slower tempo. The candidate
+    // is the best lag within +-2 frames of the exact octave: the slow peak
+    // can sit a frame off (test7.wav: octave lag 72, slow peak at 74).
+    // Verified on test7.wav (70 BPM): slow peak scores 0.52x of the fast
+    // one -> 69.8 BPM.
+    const float best_score = *best_it;
+    const int octave_lo = 2 * best_lag - 2;
+    const int octave_hi = std::min(lag_max, 2 * best_lag + 2);
+    int octave_lag = std::max(lag_min, 2 * best_lag);
+    for (int lag = std::max(lag_min, octave_lo); lag <= octave_hi; ++lag)
+    {
+        if (score[lag] > score[octave_lag])
+        {
+            octave_lag = lag;
+        }
+    }
+    if (octave_lag != best_lag && score[octave_lag] >= 0.5f * best_score)
+    {
+        return 60.0f * frame_rate / static_cast<float>(octave_lag);
+    }
+    return 60.0f * frame_rate / static_cast<float>(best_lag);
 }
 
 // Beat tracking by dynamic programming (Ellis 2007): maximize onset strength
@@ -326,9 +349,11 @@ RhythmResult analyze_rhythm(const Eigen::Tensor2dXf &onsets,
         return result; // too little material for reliable tempo
     }
 
+    // Accent signal: audio flux when available, else model OSS (flat).
+    const std::vector<float> &accent_sig = accent ? *accent : oss;
     const float bpm = params.tempo_bpm > 0.0f
                           ? params.tempo_bpm
-                          : estimate_tempo_bpm(oss, frame_rate, 120.0f);
+                          : estimate_tempo_bpm(accent_sig, frame_rate, 120.0f);
     if (bpm < 30.0f || bpm > 300.0f)
     {
         return result;
@@ -343,18 +368,74 @@ RhythmResult analyze_rhythm(const Eigen::Tensor2dXf &onsets,
         return result;
     }
 
-    // Time signature numerator from per-beat accent periodicity.
-    // Accent signal: audio flux when available, else model OSS (flat).
-    const std::vector<float> &accent_sig = accent ? *accent : oss;
-    result.ts_numerator =
-        detect_ts_numerator(accent_sig, result.beats_s, bpm, frame_rate);
+    if (params.time_sig_num > 0)
+    {
+        // Explicit time signature overrides accent-based detection
+        result.ts_numerator = params.time_sig_num;
+        result.ts_denominator =
+            params.time_sig_den > 0 ? params.time_sig_den : 4;
+    }
+    else
+    {
+        result.ts_numerator =
+            detect_ts_numerator(accent_sig, result.beats_s, bpm, frame_rate);
+    }
+
+    // The grid is anchored at the first note so the first note always starts
+    // the measure (no leading rest in the quantized output).
+    result.grid_anchor = starts_s.front();
 
     // Grid for quantization: auto or explicit subdivision
     const float tolerance_s = params.tolerance_ms / 1000.0f;
     if (params.quantize == 1) // auto
     {
+        // Auto always picks a grid (the best fit): a fallback chain with
+        // relaxed coverage, then the best raw hit count, then the beat grid —
+        // so every note snaps and no "~" remains in the output.
         result.subdivision =
             choose_subdivision(starts_s, result.beats_s, bpm, tolerance_s, 0.9f);
+        if (result.subdivision == 0)
+        {
+            result.subdivision =
+                choose_subdivision(starts_s, result.beats_s, bpm, tolerance_s, 0.5f);
+        }
+        if (result.subdivision == 0)
+        {
+            int best_sub = 0;
+            int best_hits = 0;
+            const float period = 60.0f / bpm;
+            for (int sub : {8, 4, 2, 1})
+            {
+                const float step = period / sub;
+                int hits = 0;
+                for (float s : starts_s)
+                {
+                    float best_dist = 1e9f;
+                    for (float b : result.beats_s)
+                    {
+                        for (int k = 0; k < sub; ++k)
+                        {
+                            const float g = b + k * step;
+                            const float d = std::fabs(s - g);
+                            if (d < best_dist)
+                            {
+                                best_dist = d;
+                            }
+                        }
+                    }
+                    if (best_dist <= tolerance_s)
+                    {
+                        ++hits;
+                    }
+                }
+                if (hits > best_hits)
+                {
+                    best_hits = hits;
+                    best_sub = sub;
+                }
+            }
+            result.subdivision = best_sub > 0 ? best_sub : 1;
+        }
     }
     else if (params.quantize == 2)
     {
@@ -379,7 +460,8 @@ std::vector<float> rhythm_grid(const RhythmResult &result)
         return {};
     }
     const float step = 60.0f / result.tempo_bpm / result.subdivision;
-    const float anchor = result.beats_s.front();
+    const float anchor =
+        result.grid_anchor > 0.0f ? result.grid_anchor : result.beats_s.front();
     const float last = result.beats_s.back();
     const int count =
         static_cast<int>(std::ceil((last - anchor) / step)) + 1;

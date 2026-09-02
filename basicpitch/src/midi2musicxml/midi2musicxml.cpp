@@ -348,9 +348,10 @@ void write_note(std::string &out, const Note &n, int divisions, bool is_rest,
 
 } // namespace
 
-// Core conversion: SMF bytes -> MusicXML document string
+// Core conversion: SMF bytes -> MusicXML document string.
+// clef: 0 = G (treble), 1 = F (bass).
 bool convert_smf_to_string(const std::vector<uint8_t> &bytes,
-                           const std::string &title, std::string &out,
+                           const std::string &title, int clef, std::string &out,
                            std::string &err)
 {
     Song song;
@@ -411,7 +412,10 @@ bool convert_smf_to_string(const std::vector<uint8_t> &bytes,
             out += "        <key><fifths>0</fifths></key>\n";
             out += "        <time><beats>" + std::to_string(song.ts_num) +
                    "</beats><beat-type>" + std::to_string(song.ts_den) + "</beat-type></time>\n";
-            out += "        <clef><sign>G</sign><line>2</line></clef>\n";
+            if (clef == 1)
+                out += "        <clef><sign>F</sign><line>4</line></clef>\n";
+            else
+                out += "        <clef><sign>G</sign><line>2</line></clef>\n";
             out += "      </attributes>\n";
             out += "      <direction placement=\"above\">\n"
                    "        <direction-type><metronome><beat-unit>quarter</beat-unit>"
@@ -550,7 +554,7 @@ int main(int argc, char **argv)
     }
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), {});
     std::string out, err;
-    if (!convert_smf_to_string(bytes, in_path.substr(in_path.find_last_of('/') + 1), out, err))
+    if (!convert_smf_to_string(bytes, in_path.substr(in_path.find_last_of('/') + 1), 0, out, err))
     {
         std::fprintf(stderr, "midi2musicxml: %s: %s\n", in_path.c_str(), err.c_str());
         return 1;
@@ -570,11 +574,12 @@ int main(int argc, char **argv)
 
 // C ABI entry point for the v2m library (see src/libv2m.cpp / v2m.h)
 extern "C" int v2m_midi_to_musicxml(const uint8_t *midi, size_t len,
-                                    const char *out_path, char **err_out)
+                                    const char *out_path, int clef,
+                                    char **err_out)
 {
     std::vector<uint8_t> bytes(midi, midi + len);
     std::string out, err;
-    if (!convert_smf_to_string(bytes, "Music", out, err))
+    if (!convert_smf_to_string(bytes, "Music", clef, out, err))
     {
         if (err_out)
             *err_out = strdup(err.c_str());

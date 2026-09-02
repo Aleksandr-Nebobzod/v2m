@@ -14,7 +14,7 @@ object V2mEngine {
     private external fun nativeTranscribe(
         pcm: FloatArray, sampleRate: Int, params: DoubleArray,
     ): ByteArray?
-    private external fun nativeMidiToMusicXml(midi: ByteArray, path: String): Boolean
+    private external fun nativeMidiToMusicXml(midi: ByteArray, path: String, clef: Int): Boolean
     private external fun nativeLastReport(): String
 
     /** All transcription knobs; order matches the native V2mParams. */
@@ -34,6 +34,8 @@ object V2mEngine {
         val minBendBins: Int,
         val globalShift: Float,
         val modeSnap: Float,
+        val timeSigNum: Int = 0,
+        val timeSigDen: Int = 0,
     ) {
         fun toArray(verbose: Boolean = false): DoubleArray = doubleArrayOf(
             onsetThreshold.toDouble(),
@@ -51,6 +53,8 @@ object V2mEngine {
             minBendBins.toDouble(),
             globalShift.toDouble(),
             modeSnap.toDouble(),
+            timeSigNum.toDouble(),
+            timeSigDen.toDouble(),
             if (verbose) 1.0 else 0.0,
         )
 
@@ -62,6 +66,7 @@ object V2mEngine {
                     d[4].toInt(), d[5].toFloat(), d[6] != 0.0, d[7] != 0.0,
                     d[8].toFloat(), d[9].toInt(), d[10].toFloat(),
                     d[11].toInt(), d[12].toInt(), d[13].toFloat(), d[14].toFloat(),
+                    d[16].toInt(), d[17].toInt(),
                 )
             }
         }
@@ -71,9 +76,10 @@ object V2mEngine {
     fun transcribe(pcm: FloatArray, sampleRate: Int, params: Params, verbose: Boolean = false): ByteArray? =
         nativeTranscribe(pcm, sampleRate, params.toArray(verbose))
 
-    /** Write a MusicXML file next to the MIDI bytes. */
-    fun midiToMusicXml(midi: ByteArray, path: String): Boolean =
-        nativeMidiToMusicXml(midi, path)
+    /** Write a MusicXML file next to the MIDI bytes. [clef]: 0 = G
+     *  (treble), 1 = F (bass). */
+    fun midiToMusicXml(midi: ByteArray, path: String, clef: Int = 0): Boolean =
+        nativeMidiToMusicXml(midi, path, clef)
 
     /** Informative pipeline report of the last transcription (tempo, mode
      *  fit, global shift); ONNX "Schema error" noise is filtered out. */

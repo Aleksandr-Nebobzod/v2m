@@ -25,6 +25,8 @@ typedef struct
     float tempo_bpm;          /* 0 = auto, default 0 */
     int quantize;             /* 0 off, 1 auto, 2 beat, 3 eighth, 4 sixteenth */
     float tolerance_ms;       /* default 40 */
+    int time_sig_num;         /* 0 = auto, default 0 */
+    int time_sig_den;         /* 0 = auto, default 0 */
     int harmonize_merge;      /* semitones, 0 = off */
     int min_bend_bins;        /* contour bins, 0 = off */
     float global_shift;       /* 0..1, 0 = off */
@@ -46,10 +48,11 @@ int v2m_transcribe(const float *pcm, int n_samples, int sample_rate,
                    char **err);
 
 /* Convert MIDI file bytes to a MusicXML 3.1 file at out_path.
- * Pitch bends are dropped by design (see midi2musicxml). Returns 1 on success,
- * 0 on failure (*err malloc'ed, release with v2m_free). */
+ * clef: 0 = G (treble), 1 = F (bass). Pitch bends are dropped by design
+ * (see midi2musicxml). Returns 1 on success, 0 on failure (*err malloc'ed,
+ * release with v2m_free). */
 int v2m_midi_to_musicxml(const uint8_t *midi, size_t len, const char *out_path,
-                         char **err);
+                         int clef, char **err);
 
 /* Release buffers returned by the functions above. */
 void v2m_free(void *p);
