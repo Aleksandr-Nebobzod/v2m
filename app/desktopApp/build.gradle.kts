@@ -14,9 +14,15 @@ kotlin {
         val desktopMain by getting
         desktopMain.dependencies {
             implementation(compose.desktop.currentOs)
+            implementation(compose.components.resources)
             implementation(project(":shared"))
         }
     }
+}
+
+compose.resources {
+    packageOfResClass = "com.v2m.app.resources"
+    generateResClass = always
 }
 
 compose.desktop {

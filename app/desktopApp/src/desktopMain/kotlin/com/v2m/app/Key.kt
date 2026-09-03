@@ -24,7 +24,10 @@ data class KeyInfo(
         }
 }
 
-private val ROOT_NAMES = arrayOf("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
+/** Root names in the circle-of-fifths orthography (Eb/Ab/Bb, not
+ *  D#/G#/A#) — their fifths must match MAJOR_FIFTHS, so the key-selector
+ *  labels (Strings.KEY_SEL_NAMES) build on this same array. */
+val ROOT_NAMES = arrayOf("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
 
 // fifths for major keys by root pitch class (circle of fifths)
 private val MAJOR_FIFTHS = mapOf(
@@ -41,6 +44,22 @@ fun parseModeFit(report: String): ModeFit? {
         .find(report) ?: return null
     return ModeFit(m.groupValues[1].trim(), m.groupValues[2].toInt(),
         m.groupValues[3].toInt(), m.groupValues[4].replace(',', '.').toDouble())
+}
+
+/** Key for the "Тональность" slider: 0 = auto (null), 1..12 — major
+ *  (root = sel − 1), 13..24 — minor (root = sel − 13, fifths taken from the
+ *  relative major, +3, as the native mode-fit parser does). */
+fun keyFromSelection(sel: Int): KeyInfo? = when (sel) {
+    0 -> null
+    in 1..12 -> {
+        val root = sel - 1
+        KeyInfo(root, "major", MAJOR_FIFTHS[root]!!)
+    }
+    in 13..24 -> {
+        val root = sel - 13
+        KeyInfo(root, "minor", MAJOR_FIFTHS[(root + 3) % 12]!!)
+    }
+    else -> null
 }
 
 /** Parse "mode fit: <root> <mode>, ..." from the native report; null if absent. */

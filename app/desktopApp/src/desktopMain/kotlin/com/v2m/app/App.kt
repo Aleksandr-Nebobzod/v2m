@@ -22,9 +22,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.v2m.app.resources.Res
+import com.v2m.app.resources.metronome
+import com.v2m.app.resources.music_note_2
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.awt.Desktop
+import org.jetbrains.compose.resources.DrawableResource
+import org.jetbrains.compose.resources.ExperimentalResourceApi
+import org.jetbrains.compose.resources.painterResource
 import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
@@ -87,9 +92,11 @@ fun App() {
         var wavFile by remember { mutableStateOf<File?>(null) }
         var busy by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf<String?>(null) }
-        var detectKey by remember { mutableStateOf(prefs.detectKey) }
+        var keySel by remember { mutableStateOf(prefs.keySel) } // 0 = авто, 1..24 (см. Key.kt)
+        var smoothingWindow by remember { mutableStateOf(prefs.smoothingWindow) } // нечётное 3..15; UI-стаб
         var instrument by remember { mutableStateOf(prefs.instrument ?: (prefs.params.program + 1).coerceIn(1, 128)) } // 1..128 (GM)
         var clef by remember { mutableStateOf(prefs.clef) } // 0 = G (скрипичный), 1 = F (басовый); экспорт MusicXML
+        var anacrusis by remember { mutableStateOf(prefs.anacrusis) } // затакт: неполный первый такт из N восьмых, 0..8, 0 = выкл (Р5)
         // Final tempo/size: export-only values (applied to the MIDI on
         // listen/save, never passed to the engine). An explicit edit
         // (override) wins, otherwise the last auto-detected value is shown
@@ -104,26 +111,33 @@ fun App() {
         var lastXmlDir by remember { mutableStateOf(prefs.lastXml) }
         var versions by remember { mutableStateOf(listOf<Version>()) }
         var selected by remember { mutableStateOf(0) }
+        var playing by remember { mutableStateOf(false) } // встроенный MIDI-плеер звучит (кнопка «Слушать»)
         val scope = rememberCoroutineScope()
 
         val current: Version? = versions.getOrNull(selected)
 
         fun savePrefs() {
-            Preferences.save(params, detectKey, instrument, clef, lastWavDir, lastMidiDir, lastXmlDir)
+            Preferences.save(params, keySel, smoothingWindow, instrument, clef, anacrusis, lastWavDir, lastMidiDir, lastXmlDir)
         }
+
+        /** Key of the selected version for display/export: the explicit
+         *  «Тональность» choice when set, otherwise the auto-detected one. */
+        fun effectiveKey(report: String): KeyInfo? =
+            if (keySel == 0) parseKeyFromReport(report) else keyFromSelection(keySel)
 
         /** MIDI bytes as exported: normalized note events (no repeated
          *  attacks / stray releases — MuseScore misreads the tempo of such
-         *  files), instrument patch + final tempo/size overrides. */
-        fun exportMidi(midi: ByteArray): ByteArray =
-            finalizeMidi(normalizeMidi(patchProgram(midi, instrument)), finalTempoOverride, finalSizeOverride)
+         *  files), instrument patch + final tempo/size/key overrides. */
+        fun exportMidi(midi: ByteArray, key: KeyInfo?): ByteArray =
+            finalizeMidi(normalizeMidi(patchProgram(midi, instrument)),
+                finalTempoOverride, finalSizeOverride, key)
 
         DisposableEffect(Unit) {
             onDispose { savePrefs() }
         }
 
         // Persist on every change so an abrupt exit (crash, kill) loses nothing.
-        LaunchedEffect(params, detectKey, instrument, clef) { savePrefs() }
+        LaunchedEffect(params, keySel, smoothingWindow, instrument, clef, anacrusis) { savePrefs() }
 
         fun chooseWav() {
             val dlg = FileDialog(null as Frame?, Strings.loadTitle, FileDialog.LOAD)
@@ -174,14 +188,44 @@ fun App() {
 
         fun listen() {
             val v = versions.getOrNull(selected) ?: return
-            try {
-                val tmp = File.createTempFile("v2m-listen", ".mid")
-                tmp.writeBytes(exportMidi(v.midi))
-                Desktop.getDesktop().open(tmp)
-            } catch (e: Exception) {
-                error = Strings.listenFailed.format(e.message)
+            if (playing) { // повторное нажатие во время звучания — остановка
+                MidiPlayer.stop()
+                return
+            }
+            error = null
+            val err = MidiPlayer.play(exportMidi(v.midi, effectiveKey(v.report))) { playing = false }
+            if (err == null) playing = true else error = err
+        }
+
+        /** Play one of the bundled sound samples, transformed per the
+         *  acceptance (п.18): [bpm] retempos the metronome sample to the
+         *  tempo slider, [key] transposes the tonica sample into the chosen
+         *  key (its tempo is fixed at 180 in the file). The buttons are
+         *  disabled in the «Авто» state, so at most one transform applies.
+         *  Read failures are shown as [error]. */
+        fun playSample(resPath: String, bpm: Double? = null, key: KeyInfo? = null) {
+            error = null
+            scope.launch {
+                val midi = try {
+                    readSampleBytes(resPath)
+                } catch (e: Exception) {
+                    error = e.message ?: e.toString()
+                    return@launch
+                }
+                val prepared = when {
+                    bpm != null -> rewriteSample(midi, tempoBpm = bpm)
+                    key != null -> transposeSample(midi, key)
+                    else -> midi
+                }
+                MidiPlayer.play(prepared)?.let { error = it }
             }
         }
+
+        // Count-in clicks in the selected tempo (disabled at «Авто» = 0)
+        fun playMetronome() = playSample("files/counIn.mid", bpm = params.tempoBpm.toDouble())
+
+        // Tonica in the chosen key (disabled at «Авто» = 0), tempo 180
+        fun playTriad() = playSample("files/tonica.mid", key = keyFromSelection(keySel))
 
         fun saveAs(ext: String, v: Version, writer: (String, Version) -> Boolean) {
             val base = (wavFile?.nameWithoutExtension ?: "result") + ".$ext"
@@ -209,44 +253,62 @@ fun App() {
                     Text(wavFile?.name ?: Strings.noFile, style = MaterialTheme.typography.body2)
                 }
 
-                // 1. Параметры — свёртываемые, подсказки по долгому тапу, значения в %
-                Collapsible(Strings.secParams, defaultOpen = true) {
+                // 1. Ритмика — длительность, атака, темп (свёртываемый)
+                Collapsible(Strings.secRhythm, defaultOpen = true) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        ParamSlider(Strings.velocityLabel, params.velocityCompress, "velocityCompress") { params = params.copy(velocityCompress = it) }
                         ParamSlider(Strings.onsetLabel, params.onsetThreshold, "onsetThreshold") { params = params.copy(onsetThreshold = it) }
                         ParamSlider(Strings.frameLabel, params.frameThreshold, "frameThreshold") { params = params.copy(frameThreshold = it) }
-                        ParamSlider(Strings.velocityLabel, params.velocityCompress, "velocityCompress") { params = params.copy(velocityCompress = it) }
-                        ParamSlider(Strings.shiftLabel, params.globalShift, "globalShift") { params = params.copy(globalShift = it) }
-                        ParamSlider(Strings.snapLabel, params.modeSnap, "modeSnap") { params = params.copy(modeSnap = it) }
                         ParamMs(Strings.minLenLabel, params.minNoteLen, "minNoteLen", { params = params.copy(minNoteLen = it) })
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            ParamInt(Strings.mergeLabel, params.harmonizeMerge, 0..3, "harmonizeMerge") { params = params.copy(harmonizeMerge = it) }
-                            ParamMs(Strings.energyLabel, params.energyTol, "energyTol", { params = params.copy(energyTol = it) }, rangeMs = 0f..350f, maxFrames = 30)
-                            ParamInt(Strings.minBendLabel, params.minBendBins, 0..5, "minBendBins") { params = params.copy(minBendBins = it) }
+                        ParamMs(Strings.energyLabel, params.energyTol, "energyTol", { params = params.copy(energyTol = it) }, rangeMs = 0f..350f, maxFrames = 30)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ParamRange(Strings.tempoLabel, params.tempoBpm, 24f..250f, "tempoBpm", Modifier.weight(1f),
+                                toValue = { r -> val v = r.roundToInt(); if (v <= 24) 0f else v.toFloat() },
+                                toPosition = { v -> if (v <= 0f) 24f else v }) { params = params.copy(tempoBpm = it) }
+                            // Метроном играет счёт counIn.mid только при выбранном темпе (2а: при «Авто» недоступна)
+                            SoundButton(Res.drawable.metronome, ::playMetronome, enabled = params.tempoBpm > 0)
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            ParamRange(Strings.tempoLabel, params.tempoBpm, 0f..300f, "tempoBpm") { params = params.copy(tempoBpm = it) }
-                            ParamRange(Strings.toleranceLabel, params.toleranceMs, 0f..200f, "toleranceMs") { params = params.copy(toleranceMs = it) }
-                        }
+                        ParamRange(Strings.toleranceLabel, params.toleranceMs, 0f..200f, "toleranceMs") { params = params.copy(toleranceMs = it) }
                         ParamSelect(Strings.quantizeLabel, Strings.QUANTIZE_OPTIONS, params.quantize, "quantize") { params = params.copy(quantize = it) }
+                    }
+                }
+
+                Divider()
+
+                // 2. Мелодика — высотная группа (свёртываемый)
+                Collapsible(Strings.secMelody, defaultOpen = true) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        ParamInt(Strings.smoothingLabel, smoothingWindow, 3..15, "medianFilter", steps = 5) { smoothingWindow = it }
+                        ParamInt(Strings.mergeLabel, params.harmonizeMerge, 0..3, "harmonizeMerge", steps = 2) { params = params.copy(harmonizeMerge = it) }
+                        // «Колоратура» — инверсия minBendBins: 0..5 в UI, в движок идёт 5 − значение
+                        ParamInt(Strings.minBendLabel, (5 - params.minBendBins).coerceIn(0, 5), 0..5, "minBendBins", steps = 4) { params = params.copy(minBendBins = (5 - it).coerceIn(0, 5)) }
+                        KeySelector(keySel, { keySel = it }, ::playTriad)
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            ParamSlider(Strings.shiftLabel, params.globalShift, "globalShift", Modifier.weight(1f)) { params = params.copy(globalShift = it) }
+                            ParamSlider(Strings.snapLabel, params.modeSnap, "modeSnap", Modifier.weight(1f)) { params = params.copy(modeSnap = it) }
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             ParamCheck(Strings.melodiaLabel, params.useMelodiaTrick, "useMelodiaTrick") { params = params.copy(useMelodiaTrick = it) }
                             ParamCheck(Strings.bendsLabel, params.includePitchBends, "includePitchBends") { params = params.copy(includePitchBends = it) }
                         }
-                        ParamCheck(Strings.keyLabel, detectKey, "detectKey") { detectKey = it }
                     }
                 }
 
                 error?.let { Text(it, color = MaterialTheme.colors.error, style = MaterialTheme.typography.body2) }
 
-                // 3. Версии — скроллер с радиокнопками (первая серая до первого результата)
+                // 3. Версии — скроллер с радиокнопками (первая серая до первого
+                //    результата). История прогонов: новые версии сверху — индекс
+                //    версии по порядку прогона idx = size-1-i, выбранный элемент
+                //    и его номер В.NN остаются привязаны к версии, а не к позиции.
                 Collapsible(Strings.secVersions, defaultOpen = true) {
                     LazyColumn(Modifier.heightIn(max = 96.dp)) {
                         items(maxOf(versions.size, 1)) { i ->
-                            val v = versions.getOrNull(i)
+                            val idx = versions.size - 1 - i
+                            val v = versions.getOrNull(idx)
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 RadioButton(
-                                    selected = v != null && i == selected,
-                                    onClick = { selected = i },
+                                    selected = v != null && idx == selected,
+                                    onClick = { selected = idx },
                                     enabled = v != null,
                                 )
                                 Text(
@@ -255,12 +317,12 @@ fun App() {
                                         // The key name sits right after the note count so a
                                         // "NN% гарм." figure is read together with the mode
                                         // it was measured against (the "C# lydian" episode).
-                                        val key = parseKeyFromReport(v.report)
+                                        val key = effectiveKey(v.report)
                                         val keyPart = key?.let { ", ${it.name}" } ?: ""
                                         val harm = harmonyPct(v.notes, key)
                                             ?.let { ", $it% гарм." } ?: ""
                                         String.format(Locale.ROOT, Strings.versionRow,
-                                            i + 1, song?.tsNum ?: 0, song?.tsDen ?: 0,
+                                            idx + 1, song?.tsNum ?: 0, song?.tsDen ?: 0,
                                             song?.tempoBpm ?: 0.0, v.notes.size,
                                             keyPart, harm, v.wavName)
                                     } else {
@@ -272,13 +334,13 @@ fun App() {
                     }
                 }
 
-                // 2. Отчёт — свёртываемый, только полезное (без Schema error),
+                // 4. Отчёт — свёртываемый, только полезное (без Schema error),
                 //    текст выделяется для копирования
                 Collapsible(Strings.secReport) {
                     val v = current
                     if (v != null) {
                         val song = runCatching { parseMidiSong(v.midi) }.getOrNull()
-                        val key = if (detectKey) parseKeyFromReport(v.report) else null
+                        val key = effectiveKey(v.report)
                         val head = buildString {
                             appendLine(Strings.paramsLine.format(paramsCli(v.params)))
                             appendLine(Strings.fileLine.format(v.wavName))
@@ -310,13 +372,13 @@ fun App() {
                     }
                 }
 
-                // 4. Ноты — свёртываемые, моноширинно, фиксированные маски колонок
+                // 5. Ноты — свёртываемые, моноширинно, фиксированные маски колонок
                 Collapsible(Strings.secNotes, defaultOpen = true) {
                     val v = current
                     if (v != null) {
                         val song = runCatching { parseMidiSong(v.midi) }.getOrNull()
                         if (song != null) {
-                            val key = if (detectKey) parseKeyFromReport(v.report) else null
+                            val key = effectiveKey(v.report)
                             val rows = buildRows(song)
                             SelectionContainer {
                                 LazyColumn(Modifier.heightIn(max = 300.dp)) {
@@ -359,124 +421,157 @@ fun App() {
                     }
                 }
 
-                // Финальные темп и размер — с каким темпом/размером MIDI будет
-                // экспортирован (прослушивание, сохранение). Применяются к
-                // байтам MIDI на лету; на транскрипцию не влияют. Правка
-                // создаёт override (0 или "0/0" возвращает автодетект).
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(Strings.finalTempoLabel, style = MaterialTheme.typography.body2)
-                    InlineField(
-                        value = finalTempoText,
-                        onValueChange = { s ->
-                            val digits = s.filter { it.isDigit() }.take(3)
-                            val v = digits.toIntOrNull()
-                            if (v != null && v in 0..300) {
-                                finalTempoText = v.toString()
-                                finalTempoOverride = if (v > 0) v.toDouble() else null
-                            } else {
-                                finalTempoText = finalTempoOverride?.let { String.format(Locale.ROOT, "%.1f", it) } ?: finalTempoDetected
+                // 6. Экспорт — финальный темп/размер, clef, инструмент и кнопки
+                //    сохранения (свёртываемый). Значения применяются к байтам
+                //    MIDI на лету; на транскрипцию не влияют. Правка темпа
+                //    создаёт override (0 или "0/0" возвращает автодетект).
+                Collapsible(Strings.secExport, defaultOpen = true) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(Strings.finalTempoLabel, style = MaterialTheme.typography.body2)
+                            InlineField(
+                                value = finalTempoText,
+                                onValueChange = { s ->
+                                    val digits = s.filter { it.isDigit() }.take(3)
+                                    val v = digits.toIntOrNull()
+                                    if (v != null && v in 0..300) {
+                                        finalTempoText = v.toString()
+                                        finalTempoOverride = if (v > 0) v.toDouble() else null
+                                    } else {
+                                        finalTempoText = finalTempoOverride?.let { String.format(Locale.ROOT, "%.1f", it) } ?: finalTempoDetected
+                                    }
+                                },
+                                modifier = Modifier.width(64.dp),
+                            )
+                            Text(Strings.bpmUnit, style = MaterialTheme.typography.body2)
+                            Text(Strings.finalSizeLabel, style = MaterialTheme.typography.body2)
+                            var sizeMenuOpen by remember { mutableStateOf(false) }
+                            TextButton(onClick = { sizeMenuOpen = true }) {
+                                Text(
+                                    finalSizeOverride?.let { "${it.first}/${it.second}" } ?: finalSizeDetected,
+                                    style = MaterialTheme.typography.body2)
                             }
-                        },
-                        modifier = Modifier.width(64.dp),
-                    )
-                    Text(Strings.bpmUnit, style = MaterialTheme.typography.body2)
-                    Text(Strings.finalSizeLabel, style = MaterialTheme.typography.body2)
-                    var sizeMenuOpen by remember { mutableStateOf(false) }
-                    TextButton(onClick = { sizeMenuOpen = true }) {
-                        Text(
-                            finalSizeOverride?.let { "${it.first}/${it.second}" } ?: finalSizeDetected,
-                            style = MaterialTheme.typography.body2)
-                    }
-                    DropdownMenu(expanded = sizeMenuOpen, onDismissRequest = { sizeMenuOpen = false }) {
-                        DropdownMenuItem(onClick = { finalSizeOverride = null; sizeMenuOpen = false }) {
-                            Text(
-                                if (finalSizeDetected == Strings.auto) Strings.auto
-                                else String.format(Locale.ROOT, Strings.autoDetected, finalSizeDetected),
-                                style = MaterialTheme.typography.body2)
-                        }
-                        for ((name, ts) in Strings.SIZE_OPTIONS) {
-                            DropdownMenuItem(onClick = { finalSizeOverride = ts; sizeMenuOpen = false }) {
-                                Text(name, style = MaterialTheme.typography.body2)
-                            }
-                        }
-                    }
-                }
-
-                // Ключ для экспорта MusicXML (скрипичный/басовый); на
-                // транскрипцию и MIDI не влияет, применяется при сохранении.
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(Strings.clefLabel, style = MaterialTheme.typography.body2)
-                    var clefMenuOpen by remember { mutableStateOf(false) }
-                    TextButton(onClick = { clefMenuOpen = true }) {
-                        Text(if (clef == 0) Strings.clefTreble else Strings.clefBass,
-                             style = MaterialTheme.typography.body2)
-                    }
-                    DropdownMenu(expanded = clefMenuOpen, onDismissRequest = { clefMenuOpen = false }) {
-                        DropdownMenuItem(onClick = { clef = 0; clefMenuOpen = false }) {
-                            Text(Strings.clefTreble, style = MaterialTheme.typography.body2)
-                        }
-                        DropdownMenuItem(onClick = { clef = 1; clefMenuOpen = false }) {
-                            Text(Strings.clefBass, style = MaterialTheme.typography.body2)
-                        }
-                    }
-                }
-
-                // 5. Инструмент — выбор GM; на транскрипцию не влияет, применяется
-                //    при прослушивании и сохранении (в отчёт не попадает)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(Strings.instrumentLabel, style = MaterialTheme.typography.body2)
-                    var text by remember { mutableStateOf(instrument.toString()) }
-                    var menuOpen by remember { mutableStateOf(false) }
-                    InlineField(
-                        value = text,
-                        onValueChange = { s ->
-                            val digits = s.filter { it.isDigit() }.take(3)
-                            val v = digits.toIntOrNull()
-                            if (v != null && v in 1..128) {
-                                text = v.toString()
-                                instrument = v
-                            } else {
-                                text = instrument.toString() // invalid input — show the actual value
-                            }
-                        },
-                        modifier = Modifier.width(44.dp),
-                    )
-                    Text(gmName(instrument), style = MaterialTheme.typography.body2)
-                    TextButton(onClick = { menuOpen = true }) { Text(Strings.chooseInstrument + " ▾") }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        // heightIn before verticalScroll: the scrollable must get
-                        // bounded constraints, otherwise Compose throws "measured
-                        // with an infinity maximum height constraints" (crash on open)
-                        Column(
-                            Modifier.widthIn(max = 400.dp).heightIn(max = 420.dp)
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            for ((group, items) in GM_INSTRUMENTS) {
-                                Text(group, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.body2,
-                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                                for ((num, name) in items) {
-                                    DropdownMenuItem(onClick = { instrument = num; text = num.toString(); menuOpen = false }) {
-                                        Text("$num $name", style = MaterialTheme.typography.body2)
+                            DropdownMenu(expanded = sizeMenuOpen, onDismissRequest = { sizeMenuOpen = false }) {
+                                DropdownMenuItem(onClick = { finalSizeOverride = null; sizeMenuOpen = false }) {
+                                    Text(
+                                        if (finalSizeDetected == Strings.auto) Strings.auto
+                                        else String.format(Locale.ROOT, Strings.autoDetected, finalSizeDetected),
+                                        style = MaterialTheme.typography.body2)
+                                }
+                                for ((name, ts) in Strings.SIZE_OPTIONS) {
+                                    DropdownMenuItem(onClick = { finalSizeOverride = ts; sizeMenuOpen = false }) {
+                                        Text(name, style = MaterialTheme.typography.body2)
                                     }
                                 }
                             }
                         }
-                    }
-                }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        current?.let { v ->
-                            saveAs("mid", v) { p, ver ->
-                                val json = buildParamsJson(ver.wavName, ver.params, ver.report,
-                                    parseKeyFromReport(ver.report))
-                                File(p).writeBytes(midiWithMetaTrack(exportMidi(ver.midi), json)); true
+                        // Ключ (clef) для экспорта MusicXML (скрипичный/басовый)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(Strings.clefLabel, style = MaterialTheme.typography.body2)
+                            var clefMenuOpen by remember { mutableStateOf(false) }
+                            TextButton(onClick = { clefMenuOpen = true }) {
+                                Text(if (clef == 0) Strings.clefTreble else Strings.clefBass,
+                                     style = MaterialTheme.typography.body2)
+                            }
+                            DropdownMenu(expanded = clefMenuOpen, onDismissRequest = { clefMenuOpen = false }) {
+                                DropdownMenuItem(onClick = { clef = 0; clefMenuOpen = false }) {
+                                    Text(Strings.clefTreble, style = MaterialTheme.typography.body2)
+                                }
+                                DropdownMenuItem(onClick = { clef = 1; clefMenuOpen = false }) {
+                                    Text(Strings.clefBass, style = MaterialTheme.typography.body2)
+                                }
                             }
                         }
-                    }, enabled = current != null) { Text(Strings.saveMid) }
-                    Button(onClick = { current?.let { v -> saveAs("musicxml", v) { p, ver ->
-                        V2mEngine.midiToMusicXml(exportMidi(ver.midi), p, clef)
-                    } } }, enabled = current != null) { Text(Strings.saveMusicXml) }
+
+                        // Затакт: неполный первый такт из N восьмых в экспорте
+                        // (0 = выкл, Р5). Применяется к .mid и .musicxml, не к
+                        // предпрослушиванию.
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(Strings.anacrusisLabel, style = MaterialTheme.typography.body2)
+                            var text by remember { mutableStateOf(anacrusis.toString()) }
+                            InlineField(
+                                value = text,
+                                onValueChange = { s ->
+                                    val digits = s.filter { it.isDigit() }.take(2)
+                                    val v = digits.toIntOrNull()
+                                    if (v != null && v in 0..8) {
+                                        text = v.toString()
+                                        anacrusis = v
+                                    } else {
+                                        text = anacrusis.toString() // invalid input — show the actual value
+                                    }
+                                },
+                                modifier = Modifier.width(36.dp),
+                            )
+                            Text(Strings.anacrusisHint, style = MaterialTheme.typography.body2)
+                        }
+
+                        // Инструмент — выбор GM; на транскрипцию не влияет,
+                        // применяется при прослушивании и сохранении
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(Strings.instrumentLabel, style = MaterialTheme.typography.body2)
+                            var text by remember { mutableStateOf(instrument.toString()) }
+                            var menuOpen by remember { mutableStateOf(false) }
+                            InlineField(
+                                value = text,
+                                onValueChange = { s ->
+                                    val digits = s.filter { it.isDigit() }.take(3)
+                                    val v = digits.toIntOrNull()
+                                    if (v != null && v in 1..128) {
+                                        text = v.toString()
+                                        instrument = v
+                                    } else {
+                                        text = instrument.toString() // invalid input — show the actual value
+                                    }
+                                },
+                                modifier = Modifier.width(44.dp),
+                            )
+                            Text(gmName(instrument), style = MaterialTheme.typography.body2)
+                            TextButton(onClick = { menuOpen = true }) { Text(Strings.chooseInstrument + " ▾") }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                // heightIn before verticalScroll: the scrollable must get
+                                // bounded constraints, otherwise Compose throws "measured
+                                // with an infinity maximum height constraints" (crash on open)
+                                Column(
+                                    Modifier.widthIn(max = 400.dp).heightIn(max = 420.dp)
+                                        .verticalScroll(rememberScrollState())
+                                ) {
+                                    for ((group, items) in GM_INSTRUMENTS) {
+                                        Text(group, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.body2,
+                                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                                        for ((num, name) in items) {
+                                            DropdownMenuItem(onClick = { instrument = num; text = num.toString(); menuOpen = false }) {
+                                                Text("$num $name", style = MaterialTheme.typography.body2)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Кнопки сохранения: тональность — с «Мелодики» (слайдер
+                        // либо автоподбор), она же уходит в <key><fifths> MusicXML
+                        // и в FF 59 сохранённого .mid
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                current?.let { v ->
+                                    saveAs("mid", v) { p, ver ->
+                                        val key = effectiveKey(ver.report)
+                                                        val json = buildParamsJson(ver.wavName, ver.params, ver.report, key)
+                                        val mid = anacrusisMidi(exportMidi(ver.midi, key), anacrusis)
+                                        File(p).writeBytes(midiWithMetaTrack(mid, json)); true
+                                    }
+                                }
+                            }, enabled = current != null) { Text(Strings.saveMid) }
+                            Button(onClick = { current?.let { v -> saveAs("musicxml", v) { p, ver ->
+                                val key = effectiveKey(ver.report)
+                                V2mEngine.midiToMusicXml(
+                                    anacrusisMidi(exportMidi(ver.midi, key), anacrusis),
+                                    p, clef, key?.fifths ?: 0, anacrusis)
+                            } } }, enabled = current != null) { Text(Strings.saveMusicXml) }
+                        }
+                    }
                 }
             }
 
@@ -487,28 +582,40 @@ fun App() {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Button(onClick = ::transcribe, enabled = !busy && wavFile != null) { Text(if (busy) Strings.busy else Strings.transcribe) }
-                Button(onClick = ::listen, enabled = !busy && versions.isNotEmpty()) { Text(Strings.listen) }
+                Button(onClick = ::listen, enabled = !busy && versions.isNotEmpty()) {
+                    Text(if (playing) Strings.stopListen else Strings.listen)
+                }
                 if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
             }
         }
     }
 }
 
+/** The bundled sound sample at [path] (a composeResources files/ entry). */
+@OptIn(ExperimentalResourceApi::class)
+private suspend fun readSampleBytes(path: String): ByteArray = Res.readBytes(path)
+
 @Composable
-private fun ParamSlider(label: String, value: Float, helpKey: String, onChange: (Float) -> Unit) {
+private fun ParamSlider(label: String, value: Float, helpKey: String,
+                        modifier: Modifier = Modifier, onChange: (Float) -> Unit) {
     var percent by remember { mutableStateOf((value * 100).roundToInt()) }
-    Column {
+    Column(modifier) {
         ParamLabel("$label: $percent%", helpKey)
         Slider(percent.toFloat(), { p -> percent = p.roundToInt(); onChange(p / 100f) },
                valueRange = 0f..100f, modifier = Modifier.fillMaxWidth())
     }
 }
 
+/** Integer slider; [steps] makes the positions discrete (positions = steps + 2). */
 @Composable
-private fun ParamInt(label: String, value: Int, range: IntRange, helpKey: String, onChange: (Int) -> Unit) {
-    Column {
+private fun ParamInt(label: String, value: Int, range: IntRange, helpKey: String,
+                     modifier: Modifier = Modifier, steps: Int = 0,
+                     onChange: (Int) -> Unit) {
+    Column(modifier) {
         ParamLabel("$label: $value", helpKey)
-        Slider(value.toFloat(), { onChange(it.toInt()) }, valueRange = range.first.toFloat()..range.last.toFloat(), modifier = Modifier.fillMaxWidth(0.5f))
+        Slider(value.toFloat(), { onChange(it.toInt()) },
+               valueRange = range.first.toFloat()..range.last.toFloat(),
+               steps = steps, modifier = Modifier.fillMaxWidth())
     }
 }
 
@@ -534,16 +641,24 @@ private fun ParamMs(label: String, frames: Int, helpKey: String, onChange: (Int)
         Slider(msState.toFloat(), { v ->
             msState = v.roundToInt()
             onChange((v / 11.61).roundToInt().coerceIn(0, maxFrames))
-        }, valueRange = rangeMs, modifier = Modifier.fillMaxWidth(0.5f))
+        }, valueRange = rangeMs, modifier = Modifier.fillMaxWidth())
     }
 }
 
-/** Numeric slider with its own range (not a percent), integer display. */
+/** Numeric slider with its own range (not a percent), integer display.
+ *  [toValue]/[toPosition] map between the slider position and the stored
+ *  value: the tempo slider runs 24..250 with the left edge meaning «Авто»
+ *  (stored as 0 and displayed as 0) — no dead zone, no snapping. */
 @Composable
-private fun ParamRange(label: String, value: Float, range: ClosedFloatingPointRange<Float>, helpKey: String, onChange: (Float) -> Unit) {
-    Column {
-        ParamLabel("$label: ${value.roundToInt()}", helpKey)
-        Slider(value, onChange, valueRange = range, modifier = Modifier.fillMaxWidth(0.5f))
+private fun ParamRange(label: String, value: Float, range: ClosedFloatingPointRange<Float>, helpKey: String,
+                       modifier: Modifier = Modifier, toValue: (Float) -> Float = { it },
+                       toPosition: (Float) -> Float = { it },
+                       onChange: (Float) -> Unit) {
+    var raw by remember { mutableStateOf(toPosition(value)) }
+    Column(modifier) {
+        ParamLabel("$label: ${toValue(raw).roundToInt()}", helpKey)
+        Slider(raw, { raw = it; onChange(toValue(it)) }, valueRange = range,
+               modifier = Modifier.fillMaxWidth())
     }
 }
 
@@ -560,6 +675,35 @@ private fun ParamSelect(label: String, options: List<Pair<String, Int>>, value: 
             options.forEach { (name, v) ->
                 DropdownMenuItem(onClick = { onChange(v); open = false }) { Text(name, style = MaterialTheme.typography.body2) }
             }
+        }
+    }
+}
+
+/** Small square sound-preview button with a Material icon (metronome by the
+ *  tempo slider, music note by the key selector), sitting to the right of
+ *  its slider. Disabled in the «Авто» state of its control (2а/3а: no tempo
+ *  or key chosen — nothing to play). The icon SVG
+ *  (composeResources/drawable, fill #1f1f1f) is tinted by the theme's
+ *  content color, so it stays visible in a dark theme too. */
+@OptIn(ExperimentalResourceApi::class)
+@Composable
+private fun SoundButton(icon: DrawableResource, onClick: () -> Unit, enabled: Boolean = true) {
+    TextButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) {
+        Icon(painterResource(icon), contentDescription = null)
+    }
+}
+
+/** «Тональность»: discrete slider 0..24 (0 = Авто, then 12 major + 12
+ *  minor); the name is shown above, the music-note button plays the tonica
+ *  in the chosen key (3а: disabled at «Авто»). */
+@Composable
+private fun KeySelector(keySel: Int, onSelect: (Int) -> Unit, onPlayTriad: () -> Unit) {
+    Column {
+        ParamLabel(Strings.keySelLabel.format(Strings.KEY_SEL_NAMES[keySel.coerceIn(0, 24)]), "keySelect")
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Slider(keySel.toFloat(), { onSelect(it.roundToInt()) },
+                   valueRange = 0f..24f, steps = 23, modifier = Modifier.weight(1f))
+            SoundButton(Res.drawable.music_note_2, onPlayTriad, enabled = keySel > 0)
         }
     }
 }

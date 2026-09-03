@@ -12,7 +12,7 @@ object Strings {
     const val busy = "Идёт обработка..."
     const val listen = "Слушать"
     const val saveMid = "Сохранить .mid"
-    const val saveMusicXml = "Сохранить .musicxml"
+    const val saveMusicXml = ".musicxml" // кнопка без слова «Сохранить» (решение А.М.)
     const val saveTitle = "Сохранить %s"
     const val loadTitle = "Выбрать WAV"
 
@@ -35,7 +35,9 @@ object Strings {
     )
 
     // Collapsible section titles
-    const val secParams = "Параметры"
+    const val secRhythm = "Ритмика"
+    const val secMelody = "Мелодика"
+    const val secExport = "Экспорт"
     const val secVersions = "Версии"
     const val secReport = "Отчёт"
     const val secNotes = "Ноты"
@@ -63,22 +65,39 @@ object Strings {
     const val clefTreble = "скрипичный"
     const val clefBass = "басовый"
 
+    // Anacrusis (затакт): the export starts with a partial first measure
+    // of N eighth notes; 0 = off (требование Р5)
+    const val anacrusisLabel = "Затакт:"
+    const val anacrusisHint = "восьмых (0 = выкл)"
+
     // Parameter labels (short, for the sliders and checkboxes)
     const val onsetLabel = "Порог начала ноты"
     const val frameLabel = "Порог звучания"
     const val velocityLabel = "Компрессия громкости"
-    const val shiftLabel = "Гармонизация: сдвиг"
-    const val snapLabel = "Гармонизация: лад-снап"
+    const val shiftLabel = "Гармонизация: общий сдвиг"
+    const val snapLabel = "Гармонизация: по ступеням"
     const val minLenLabel = "Мин. длина ноты"
-    const val mergeLabel = "Слияние фрагментов (п/т)"
-    const val energyLabel = "Пустые кадры у границ"
-    const val minBendLabel = "Мин. бенд (бины)"
+    const val mergeLabel = "Слияние фрагментов"
+    const val energyLabel = "Тремоло"
+    const val minBendLabel = "Колоратура"
     const val tempoLabel = "Темп (BPM, 0=авто)"
     const val toleranceLabel = "Допуск темпа (мс)"
     const val quantizeLabel = "Квантизация"
+    const val smoothingLabel = "Сглаживание"
     const val melodiaLabel = "мелодический проход"
     const val bendsLabel = "питч-бенды"
-    const val keyLabel = "определять тональность"
+
+    // Key selector: 0 = auto (mode fit), 1..12 major, 13..24 minor.
+    // Root spellings share ROOT_NAMES (Key.kt) — the circle-of-fifths
+    // orthography whose fifths match MAJOR_FIFTHS (Eb, not D#).
+    const val keySelLabel = "Тональность: %s"
+    const val keyAutoName = "Авто"
+    val KEY_SEL_NAMES: List<String> = run {
+        val names = mutableListOf(keyAutoName)
+        for (r in ROOT_NAMES) names += "$r major"
+        for (r in ROOT_NAMES) names += "$r minor"
+        names
+    }
 
     /** Quantize modes as shown in the UI (value = engine index). */
     val QUANTIZE_OPTIONS = listOf(
@@ -87,8 +106,11 @@ object Strings {
 
     // Errors
     const val transcribeFailed = "транскрипция не удалась (см. stderr)"
-    const val listenFailed = "не удалось открыть плеер: %s"
+    const val playFailed = "не удалось воспроизвести: %s"
     const val saveFailed = "не удалось записать %s (см. stderr)"
+
+    // Listen button: toggles into a stop control while MIDI playback runs
+    const val stopListen = "Остановить"
 
     // Long-press help: English name, purpose, examples (README «Влияние»)
     val HELP: Map<String, ParamHelp> = mapOf(
@@ -116,11 +138,14 @@ object Strings {
         "energyTol" to ParamHelp("energy-tol",
             "подряд идущие «пустые» кадры у границ ноты, которые её не прерывают (в мс; движок считает кадрами: 1 кадр ≈ 11.6 мс)",
             "больше: ноты не рвутся при провалах энергии (вибрато); меньше: рвутся чаще"),
-        "minBendBins" to ParamHelp("min-bend",
-            "обнулить питч-бенды мельче n бинов контура (1 бин ≈ 33 цента)",
-            "0: все бенды; 1..2: убраны мелкие колебания (дрожание), ноты ровнее"),
+        "minBendBins" to ParamHelp("coloratura",
+            "«Колоратура»: насколько мелкие питч-бенды сохраняются (инверсия — в движок идёт 5 − значение бинов; 1 бин ≈ 33 цента)",
+            "0: ровные ноты — бенды мельче 5 бинов обнулены; 5: максимум украшений — все бенды сохраняются"),
+        "medianFilter" to ParamHelp("median-filter",
+            "«Сглаживание»: ширина окна медианного фильтра контура высоты (нечётные 3..15)",
+            "пока это задел UI: фильтр в движке — следующим шагом (код А.М. — эталон)"),
         "tempoBpm" to ParamHelp("tempo",
-            "ручной темп (30..300 BPM); 0 = автодетекция",
+            "слайдер 24..250 BPM: левый край (24) — «Авто» (0), темп — от 25 до 250; кнопка «♩» — метроном 4/4 в заданном темпе",
             "0: автодетекция (test1: 120.2 BPM); 90: сетка долей ровно по нему"),
         "toleranceMs" to ParamHelp("tempo-tolerance",
             "допуск прижимания стартов/концов нот к сетке (мс)",
@@ -134,8 +159,8 @@ object Strings {
         "includePitchBends" to ParamHelp("pitch-bends",
             "питч-бенды (глиссандо между нотами) в выходном MIDI",
             "вкл: вибрато как бенды (точнее звук); выкл: ноты на хроматической сетке"),
-        "detectKey" to ParamHelp("определение тональности",
-            "показывать тональность (mode fit) в отчёте и знаки альтерации у нот (^/_/=)",
-            "вкл: C major — ноты без знаков, G major — F#; выкл: только фактические знаки"),
+        "keySelect" to ParamHelp("key-select",
+            "исполнительская тональность вывода: 0 = Авто (из автоподбора лада), иначе одна из 24; кнопка «♪» справа играет трезвучие этой тональности",
+            "Авто: как на записи (test4: C major); выбор: знаки у нот и ключ MusicXML соответствуют выбранной тональности"),
     )
 }

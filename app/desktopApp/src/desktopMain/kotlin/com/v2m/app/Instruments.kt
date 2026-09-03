@@ -89,11 +89,14 @@ val GM_INSTRUMENTS: List<Pair<String, List<Pair<Int, String>>>> = listOf(
 
 /** Apply export-time overrides to a MIDI file: the first tempo meta event
  *  (FF 51) is rewritten to [tempoBpm] (µs/beat), the first time-signature
- *  meta event (FF 58) to [tsNum]/[tsDen]; events missing from all tracks are
- *  inserted at the start of the first track. Nulls leave the file untouched.
- *  Returns the input unchanged when it is not a valid SMF. */
-fun finalizeMidi(midi: ByteArray, tempoBpm: Double?, ts: Pair<Int, Int>?): ByteArray {
-    if ((tempoBpm == null || tempoBpm <= 0.0 || tempoBpm > 300.0) && ts == null) return midi
+ *  meta event (FF 58) to [tsNum]/[tsDen], the first key-signature meta event
+ *  (FF 59) to [key] (sf = fifths — for minor keys already relative to the
+ *  major — and mi = 1 for the minor mode); events missing from all tracks
+ *  are inserted at the start of the first track. Nulls leave the file
+ *  untouched. Returns the input unchanged when it is not a valid SMF. */
+fun finalizeMidi(midi: ByteArray, tempoBpm: Double?, ts: Pair<Int, Int>?, key: KeyInfo? = null): ByteArray {
+    val tempoOk = tempoBpm != null && tempoBpm > 0.0 && tempoBpm <= 300.0
+    if (!tempoOk && ts == null && key == null) return midi
     if (midi.size < 14 || midi[0] != 'M'.code.toByte() || midi[1] != 'T'.code.toByte() ||
         midi[2] != 'h'.code.toByte() || midi[3] != 'd'.code.toByte()) return midi
     val hlen = ((midi[4].toInt() and 0xFF) shl 24) or ((midi[5].toInt() and 0xFF) shl 16) or
@@ -113,11 +116,16 @@ fun finalizeMidi(midi: ByteArray, tempoBpm: Double?, ts: Pair<Int, Int>?): ByteA
         while ((1 shl dd) < den) dd++
         byteArrayOf(num.toByte(), dd.toByte())
     }
+    // FF 59: sf as a signed byte (two's complement — midicsv prints -3 for 0xFD),
+    // mi = 1 for the minor mode. The fifths of a minor KeyInfo already point to
+    // the relative major, exactly what the signature asks for.
+    val keyBytes = key?.let { byteArrayOf(it.fifths.toByte(), if (it.modeName.contains("minor")) 1 else 0) }
 
     var p = 8 + hlen
     val tracks = ArrayList<ByteArray>()
     var tempoSeen = false
     var sizeSeen = false
+    var keySeen = false
     for (t in 0 until ntrks) {
         if (p + 8 > midi.size) return midi
         if (midi[p] != 'M'.code.toByte() || midi[p + 1] != 'T'.code.toByte() ||
@@ -158,6 +166,10 @@ fun finalizeMidi(midi: ByteArray, tempoBpm: Double?, ts: Pair<Int, Int>?): ByteA
                         body.write(sizeBytes[0].toInt()); body.write(sizeBytes[1].toInt())
                         body.write(midi, p + 2, l - 2); p += l; sizeSeen = true
                     }
+                    mt == 0x59 && l >= 2 && keyBytes != null && !keySeen -> {
+                        body.write(keyBytes[0].toInt()); body.write(keyBytes[1].toInt())
+                        p += l; keySeen = true
+                    }
                     else -> { body.write(midi, p, l); p += l }
                 }
                 if (mt == 0x2F) break
@@ -189,6 +201,7 @@ fun finalizeMidi(midi: ByteArray, tempoBpm: Double?, ts: Pair<Int, Int>?): ByteA
     val insert = ByteArrayOutputStream()
     if (tempoBytes != null && !tempoSeen) { insert.write(0x00); insert.write(0xFF); insert.write(0x51); insert.write(0x03); insert.write(tempoBytes) }
     if (sizeBytes != null && !sizeSeen) { insert.write(0x00); insert.write(0xFF); insert.write(0x58); insert.write(0x04); insert.write(sizeBytes); insert.write(0x18); insert.write(0x08) }
+    if (keyBytes != null && !keySeen) { insert.write(0x00); insert.write(0xFF); insert.write(0x59); insert.write(0x02); insert.write(keyBytes) }
     val prefix = insert.toByteArray()
 
     val out = ByteArrayOutputStream()
@@ -207,6 +220,134 @@ fun finalizeMidi(midi: ByteArray, tempoBpm: Double?, ts: Pair<Int, Int>?): ByteA
         out.write(payload)
     }
     return out.toByteArray()
+}
+
+/** Rewrite the tempo and/or transpose the note pitches of a standard MIDI
+ *  file (running status understood). [tempoBpm] rewrites every tempo meta
+ *  event (FF 51) — the file then plays at exactly this tempo; a file with no
+ *  tempo event gets one prepended to the first track. [shift] remaps the
+ *  pitch byte of every note event (0x80 and 0x90, zero-velocity note-offs
+ *  included). Used by the sound-sample buttons: the count-in clicks play at
+ *  the tempo-slider value, the tonica sample is transposed into the chosen
+ *  key. Non-SMF input is returned unchanged. */
+fun rewriteSample(midi: ByteArray, tempoBpm: Double? = null, shift: ((Int) -> Int)? = null): ByteArray {
+    val tempoBytes = tempoBpm?.let { bpm ->
+        val us = Math.round(60_000_000.0 / bpm).coerceIn(0, 0xFFFFFF)
+        byteArrayOf((us shr 16).toByte(), (us shr 8).toByte(), us.toByte())
+    }
+    if (tempoBytes == null && shift == null) return midi
+    if (midi.size < 14 || midi[0] != 'M'.code.toByte() || midi[1] != 'T'.code.toByte() ||
+        midi[2] != 'h'.code.toByte() || midi[3] != 'd'.code.toByte()) return midi
+    val hlen = ((midi[4].toInt() and 0xFF) shl 24) or ((midi[5].toInt() and 0xFF) shl 16) or
+        ((midi[6].toInt() and 0xFF) shl 8) or (midi[7].toInt() and 0xFF)
+    if (hlen < 6 || 8 + hlen > midi.size) return midi
+    val ntrks = ((midi[10].toInt() and 0xFF) shl 8) or (midi[11].toInt() and 0xFF)
+    if (ntrks == 0) return midi
+
+    var p = 8 + hlen
+    val tracks = ArrayList<ByteArray>()
+    var tempoSeen = false
+    for (t in 0 until ntrks) {
+        if (p + 8 > midi.size) return midi
+        if (midi[p] != 'M'.code.toByte() || midi[p + 1] != 'T'.code.toByte() ||
+            midi[p + 2] != 'r'.code.toByte() || midi[p + 3] != 'k'.code.toByte()) return midi
+        val tlen = ((midi[p + 4].toInt() and 0xFF) shl 24) or ((midi[p + 5].toInt() and 0xFF) shl 16) or
+            ((midi[p + 6].toInt() and 0xFF) shl 8) or (midi[p + 7].toInt() and 0xFF)
+        p += 8
+        val end = p + tlen
+        if (end > midi.size) return midi
+        val body = ByteArrayOutputStream()
+        var running = 0
+        while (p < end) {
+            val deltaStart = p
+            while (p < end && (midi[p].toInt() and 0x80) != 0) p++
+            if (p >= end) break
+            p++
+            body.write(midi, deltaStart, p - deltaStart)
+            var st = midi[p].toInt() and 0xFF
+            if (st and 0x80 != 0) { p++; running = st; body.write(st) }
+            else { st = running; if (st == 0) break }
+            if (st == 0xFF) {
+                if (p >= end) break
+                val mt = midi[p].toInt() and 0xFF; p++
+                body.write(mt)
+                var l = 0
+                while (p < end) {
+                    val b = midi[p].toInt() and 0xFF; p++
+                    body.write(b)
+                    l = (l shl 7) or (b and 0x7F)
+                    if (b and 0x80 == 0) break
+                }
+                if (l < 0 || p + l > end) break
+                if (mt == 0x51 && tempoBytes != null && l >= 3) {
+                    body.write(tempoBytes); p += l; tempoSeen = true
+                } else {
+                    body.write(midi, p, l); p += l
+                }
+                if (mt == 0x2F) break
+            } else if (st and 0xF0 == 0xF0) {
+                var l = 0
+                while (p < end) {
+                    val b = midi[p].toInt() and 0xFF; p++
+                    body.write(b)
+                    l = (l shl 7) or (b and 0x7F)
+                    if (b and 0x80 == 0) break
+                }
+                if (l < 0 || p + l > end) break
+                body.write(midi, p, l); p += l
+            } else {
+                val data = when (st and 0xF0) {
+                    0xC0, 0xD0 -> 1
+                    0x80, 0x90, 0xA0, 0xB0, 0xE0 -> 2
+                    else -> 0
+                }
+                if (p + data > end) break
+                val note = (st and 0xF0) == 0x80 || (st and 0xF0) == 0x90
+                if (shift != null && note) {
+                    val pitch = midi[p].toInt() and 0xFF
+                    body.write(shift(pitch).coerceIn(0, 127))
+                    body.write(midi[p + 1].toInt() and 0xFF)
+                } else {
+                    body.write(midi, p, data)
+                }
+                p += data
+            }
+        }
+        tracks += body.toByteArray()
+        p = end
+    }
+
+    // A missing tempo event: prepend to the first track at tick 0.
+    if (tempoBytes != null && !tempoSeen) {
+        val pre = ByteArrayOutputStream()
+        pre.write(0x00); pre.write(0xFF); pre.write(0x51); pre.write(0x03); pre.write(tempoBytes)
+        tracks[0] = pre.toByteArray() + tracks[0]
+    }
+
+    val out = ByteArrayOutputStream()
+    out.write(midi, 0, 8 + hlen)
+    for (data in tracks) {
+        out.write(0x4D); out.write(0x54); out.write(0x72); out.write(0x6B) // MTrk
+        val l = data.size
+        out.write((l shr 24) and 0xFF); out.write((l shr 16) and 0xFF)
+        out.write((l shr 8) and 0xFF); out.write(l and 0xFF)
+        out.write(data)
+    }
+    return out.toByteArray()
+}
+
+/** Transpose a tonica-like sample into [key]: its root (the lowest note)
+ *  lands on 60 + rootPc (middle octave); in a minor key the major thirds
+ *  above the root are lowered a semitone («понижать терцию» — решение А.М.,
+ *  as in the former synthesized previews). */
+fun transposeSample(midi: ByteArray, key: KeyInfo): ByteArray {
+    val notes = runCatching { parseMidiSong(midi).notes }.getOrNull() ?: return midi
+    val root = notes.minOfOrNull { it.pitch } ?: return midi
+    val delta = 60 + key.rootPc - root
+    val minor = key.modeName.contains("minor")
+    return rewriteSample(midi, shift = { n ->
+        n + delta - if (minor && (n - root).mod(12) == 4) 1 else 0
+    })
 }
 
 /** Name of the instrument with GM number [gm01] (1..128), or "?" when unknown. */
@@ -326,4 +467,146 @@ fun patchProgram(midi: ByteArray, program: Int): ByteArray {
         out.write(payload)
     }
     return out.toByteArray()
+}
+
+/** Anacrusis (затакт): shift every time-signature meta event (FF 58)
+ *  [eighths] eighth notes later — the bar grid starts at tick
+ *  eighths×divisions/2, so measure boundaries move right — and insert an
+ *  opening partial signature of [eighths]/8 at tick 0. Notes are not moved
+ *  (only the bar boundaries shift; agreed semantics). [eighths] 0 = no-op.
+ *  Returns the input unchanged when [eighths] is out of 1..8 or the file
+ *  is not a valid SMF with a time signature. */
+fun anacrusisMidi(midi: ByteArray, eighths: Int): ByteArray {
+    if (eighths < 1 || eighths > 8) return midi
+    if (midi.size < 14 || midi[0] != 'M'.code.toByte() || midi[1] != 'T'.code.toByte() ||
+        midi[2] != 'h'.code.toByte() || midi[3] != 'd'.code.toByte()) return midi
+    val hlen = ((midi[4].toInt() and 0xFF) shl 24) or ((midi[5].toInt() and 0xFF) shl 16) or
+        ((midi[6].toInt() and 0xFF) shl 8) or (midi[7].toInt() and 0xFF)
+    if (hlen < 6 || 8 + hlen > midi.size) return midi
+    val ntrks = ((midi[10].toInt() and 0xFF) shl 8) or (midi[11].toInt() and 0xFF)
+    if (ntrks == 0) return midi
+    val divisions = ((midi[12].toInt() and 0xFF) shl 8) or (midi[13].toInt() and 0xFF)
+    if (divisions <= 0) return midi
+    val shift = eighths * divisions / 2
+
+    // Event boundaries of one track: (deltaStart, eventEnd, delta value, FF58?)
+    fun vlqLen(b: ByteArray, from: Int): Int {
+        var n = 0
+        while (from + n < b.size && (b[from + n].toInt() and 0x80) != 0) n++
+        return n + 1
+    }
+
+    var p = 8 + hlen
+    var firstTrack = -1
+    val trackBodies = ArrayList<ByteArray>()
+    for (t in 0 until ntrks) {
+        if (p + 8 > midi.size) return midi
+        if (midi[p] != 'M'.code.toByte() || midi[p + 1] != 'T'.code.toByte() ||
+            midi[p + 2] != 'r'.code.toByte() || midi[p + 3] != 'k'.code.toByte()) return midi
+        val tlen = ((midi[p + 4].toInt() and 0xFF) shl 24) or ((midi[p + 5].toInt() and 0xFF) shl 16) or
+            ((midi[p + 6].toInt() and 0xFF) shl 8) or (midi[p + 7].toInt() and 0xFF)
+        p += 8
+        val end = p + tlen
+        if (end > midi.size) return midi
+        val events = ArrayList<Triple<Int, Int, Boolean>>() // deltaStart, eventEnd, isFF58
+        var q = p
+        var running = 0
+        while (q < end) {
+            val dStart = q
+            while (q < end) {
+                val b = midi[q].toInt() and 0xFF
+                if (b and 0x80 == 0) break
+                q++
+            }
+            if (q >= end) break
+            q++
+            var st = midi[q].toInt() and 0xFF
+            if (st and 0x80 != 0) { q++; running = st } else st = running
+            var isFF58 = false
+            var eventEnd = q
+            if (st == 0xFF) {
+                val mt = midi[q].toInt() and 0xFF; q++
+                var l = 0
+                while (q < end) {
+                    val b = midi[q].toInt() and 0xFF; q++
+                    l = (l shl 7) or (b and 0x7F)
+                    if (b and 0x80 == 0) break
+                }
+                if (q + l > end) return midi
+                q += l
+                eventEnd = q
+                isFF58 = mt == 0x58
+                if (mt == 0x2F) { events.add(Triple(dStart, eventEnd, isFF58)); break }
+            } else if (st and 0xF0 == 0xF0) {
+                var l = 0
+                while (q < end) {
+                    val b = midi[q].toInt() and 0xFF; q++
+                    l = (l shl 7) or (b and 0x7F)
+                    if (b and 0x80 == 0) break
+                }
+                if (q + l > end) return midi
+                q += l
+                eventEnd = q
+            } else {
+                val data = when (st and 0xF0) {
+                    0xC0, 0xD0 -> 1
+                    0x80, 0x90, 0xA0, 0xB0, 0xE0 -> 2
+                    else -> 0
+                }
+                if (q + data > end) return midi
+                q += data
+                eventEnd = q
+            }
+            events.add(Triple(dStart, eventEnd, isFF58))
+            if (q >= end) break
+        }
+        if (events.isEmpty()) return midi
+        // Rebuild: shift every FF58 delta by [shift]; the first FF58 gets an
+        // opening partial signature inserted before it.
+        val body = ByteArrayOutputStream()
+        for ((dStart, eEnd, isTs) in events) {
+            val dLen = vlqLen(midi, dStart)
+            var d = 0
+            for (i in dStart until dStart + dLen) d = (d shl 7) or (midi[i].toInt() and 0x7F)
+            if (isTs) {
+                if (firstTrack < 0) {
+                    firstTrack = t
+                    // partial signature: N/8, 24 clocks, 8 32nds — the shape
+                    // MuseScore renders as an anacrusis measure
+                    body.write(0x00); body.write(0xFF); body.write(0x58); body.write(0x04)
+                    body.write(eighths); body.write(0x03); body.write(0x18); body.write(0x08)
+                }
+                writeVlq(body, d + shift)
+                body.write(midi, dStart + dLen, eEnd - dStart - dLen)
+            } else {
+                body.write(midi, dStart, eEnd - dStart)
+            }
+        }
+        trackBodies += body.toByteArray()
+        p = end
+    }
+    if (firstTrack < 0) return midi // no time signature: nothing to shift
+
+    val out = ByteArrayOutputStream()
+    out.write(midi, 0, 8 + hlen)
+    for ((t, data) in trackBodies.withIndex()) {
+        out.write(0x4D); out.write(0x54); out.write(0x72); out.write(0x6B) // MTrk
+        val l = data.size
+        out.write((l shr 24) and 0xFF); out.write((l shr 16) and 0xFF)
+        out.write((l shr 8) and 0xFF); out.write(l and 0xFF)
+        out.write(data)
+    }
+    return out.toByteArray()
+}
+
+private fun writeVlq(out: ByteArrayOutputStream, v0: Int) {
+    var v = v0
+    val stack = ArrayList<Int>()
+    stack.add(v and 0x7F)
+    v = v ushr 7
+    while (v > 0) {
+        stack.add((v and 0x7F) or 0x80)
+        v = v ushr 7
+    }
+    for (i in stack.indices.reversed()) out.write(stack[i])
 }

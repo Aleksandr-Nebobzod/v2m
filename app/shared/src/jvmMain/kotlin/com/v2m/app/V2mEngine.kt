@@ -14,7 +14,7 @@ object V2mEngine {
     private external fun nativeTranscribe(
         pcm: FloatArray, sampleRate: Int, params: DoubleArray,
     ): ByteArray?
-    private external fun nativeMidiToMusicXml(midi: ByteArray, path: String, clef: Int): Boolean
+    private external fun nativeMidiToMusicXml(midi: ByteArray, path: String, clef: Int, fifths: Int, anacrusis: Int): Boolean
     private external fun nativeLastReport(): String
 
     /** All transcription knobs; order matches the native V2mParams. */
@@ -77,9 +77,11 @@ object V2mEngine {
         nativeTranscribe(pcm, sampleRate, params.toArray(verbose))
 
     /** Write a MusicXML file next to the MIDI bytes. [clef]: 0 = G
-     *  (treble), 1 = F (bass). */
-    fun midiToMusicXml(midi: ByteArray, path: String, clef: Int = 0): Boolean =
-        nativeMidiToMusicXml(midi, path, clef)
+     *  (treble), 1 = F (bass). [fifths]: the <key><fifths> value (−7..7);
+     *  0 = C major/A minor (no key signature). [anacrusis]: partial first
+     *  measure of N eighth notes (0 = none). */
+    fun midiToMusicXml(midi: ByteArray, path: String, clef: Int = 0, fifths: Int = 0, anacrusis: Int = 0): Boolean =
+        nativeMidiToMusicXml(midi, path, clef, fifths, anacrusis)
 
     /** Informative pipeline report of the last transcription (tempo, mode
      *  fit, global shift); ONNX "Schema error" noise is filtered out. */

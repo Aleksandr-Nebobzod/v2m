@@ -78,6 +78,7 @@ fun normalizeMidi(midi: ByteArray): ByteArray {
         val body = ByteArrayOutputStream()
         val active = HashSet<Int>() // (channel shl 8) or pitch
         var running = 0
+        var droppedDelta = 0 // tick distance of dropped events, paid forward to the next kept one
         while (p < end) {
             val deltaStart = p
             while (p < end && (midi[p].toInt() and 0x80) != 0) p++
@@ -122,17 +123,23 @@ fun normalizeMidi(midi: ByteArray): ByteArray {
                 else -> {} // 0xF1..0xF6 system messages: no data
             }
             if (p > end) break
-            if (!drop) {
+            if (drop) {
+                // Keep the event's own delta-time: skipping it would pull every
+                // following note earlier and misalign bars (MuseScore then
+                // recalculates the tempo from the notes).
+                droppedDelta += readVlq(midi, deltaStart)
+            } else {
+                writeVlq(body, readVlq(midi, deltaStart) + droppedDelta)
+                droppedDelta = 0
                 if (stPos == dataStart) { // running status: re-insert the full status
-                    body.write(midi, deltaStart, dataStart - deltaStart)
                     body.write(st)
                     body.write(midi, dataStart, p - dataStart)
                 } else {
-                    body.write(midi, deltaStart, p - deltaStart)
+                    body.write(midi, stPos, p - stPos)
                 }
             }
         }
-        body.write(0x00) // delta-time before end-of-track
+        writeVlq(body, droppedDelta) // delta-time before end-of-track
         body.write(0xFF); body.write(0x2F); body.write(0x00)
         out.write('M'.code); out.write('T'.code); out.write('r'.code); out.write('k'.code)
         val len = body.size()
@@ -179,4 +186,30 @@ fun midiWithMetaTrack(midi: ByteArray, json: String): ByteArray {
     out.write(midi, 12, midi.size - 12)
     out.write(track.toByteArray())
     return out.toByteArray()
+}
+
+/** Variable-length quantity at [from]; the caller guarantees a valid event. */
+private fun readVlq(b: ByteArray, from: Int): Int {
+    var i = from
+    var v = 0
+    while (true) {
+        val x = b[i].toInt() and 0xFF
+        v = (v shl 7) or (x and 0x7F)
+        i++
+        if (x and 0x80 == 0) return v
+    }
+}
+
+private fun writeVlq(out: ByteArrayOutputStream, v0: Int) {
+    var v = v0
+    val bytes = IntArray(4)
+    var i = 3
+    bytes[i] = v and 0x7F
+    v = v ushr 7
+    while (v > 0) {
+        i--
+        bytes[i] = (v and 0x7F) or 0x80
+        v = v ushr 7
+    }
+    for (k in i until 4) out.write(bytes[k])
 }
