@@ -11,9 +11,6 @@ object Strings {
     const val transcribe = "Транскрипт"
     const val busy = "Идёт обработка..."
     const val listen = "Слушать"
-    const val saveMid = "Сохранить .mid"
-    const val saveMusicXml = ".musicxml" // кнопка без слова «Сохранить» (решение А.М.)
-    const val saveTitle = "Сохранить %s"
     const val loadTitle = "Выбрать WAV"
 
     // Instrument selector
@@ -40,11 +37,19 @@ object Strings {
     const val secExport = "Экспорт"
     const val secVersions = "Версии"
     const val secReport = "Отчёт"
-    const val secNotes = "Ноты"
+    const val secNotes = "Звучание" // переименовано по приёмке #28 (замечание 5)
 
     // Version list
     const val versionRow = "В.%02d — %d/%d, %.1f BPM, %d нот%s%s, %s" // %s1 = ", <тональность>", %s2 = ", NN% гарм." или ""
     const val versionNoResult = "В.%02d (нет результата)"
+
+    // «Звучание» — вкладки: «Кванты» — результаты обработки параметров
+    // ритма, «Тоны» — параметров мелодии (обе — гистограмма); «ABC» —
+    // ноты в abc-нотации (текстовая таблица). Имена вкладок переименованы
+    // по А.М. (билд #35, п.3)
+    const val tabInput = "Кванты"
+    const val tabOutput = "Тоны"
+    const val tabAbc = "ABC"
 
     // Report and notes placeholders
     const val noResults = "(результатов нет)"
@@ -54,6 +59,16 @@ object Strings {
     const val fileLine = "файл: %s"
     const val tempoLine = "темп: %.2f BPM, размер %d/%d, нот: %d, L=1/8"
     const val keyLine = "тональность: %s (%s)"
+    // Строка-сводка кадровых признаков (билд #38) во фрейме «Отчёт» —
+    // паспорт записи из .frames.json; собирается в framesSummaryLine
+    // (FramesSummary.kt) из частей ниже, разделитель частей — ", ".
+    const val framesSummary = "признаки: %s"
+    const val sumRange = "тесситура %s–%s" // %s: имена нот (C3, C#4)
+    const val sumConf = "conf %s" // %s: медианная уверенность кадров (0.59)
+    const val sumPoly = "полифония %s" // %s: "1.1" или "1.1/2" (с макс.)
+    const val sumOnsets = "атаки %s" // %s: "64 (3.5/с)" — с плотностью
+    const val sumStable = "стабильность %.0f%%" // доля стабильных контуров, %
+    const val sumDrift = "дрейф %s ц" // %s: "22.7/66.7" (средний/перцентиль 95)
     // Mode-fit line: translated in the UI, the English original is kept for
     // the future en-strings file (same place as the native report line).
     const val modeFitLine = "подбор лада: %s, %d%% нот в пределах %d центов, сила притягивания %.1f"
@@ -104,13 +119,93 @@ object Strings {
         "off" to 0, "auto" to 1, "beat" to 2, "eighth" to 3, "sixteenth" to 4,
     )
 
+    // Панель правки ноты под «Тонами» (билд #35, п.4): текст информации
+    // о ноте строится из её имени (нота + октава) и микротона («+32%»);
+    // кнопки [<][>][X] без текста-подписи (символы — сами кнопки),
+    // назначение — в contentDescription
+    const val editNoSelection = "нота не выбрана: кликните по столбику"
+    const val editDownCd = "вниз на полтона (у чистой ноты с микротоном — к чистой)"
+    const val editUpCd = "вверх на полтона (у чистой ноты с микротоном — к чистой)"
+    const val editMuteCd = "X с памятью: удалить ноту; повторное нажатие возвращает длительность"
+    const val editInfoCd = "нота %s" // %s: имя ноты с октавой и микротоном
+
+    // Низ экрана (билд #36, п.2): [Транскрипт], [▶] — растянута с рамкой,
+    // [Экспорт] — системный диалог с типами (п.3)
+    const val exportLabel = "Экспорт"
+    const val exportCd = "Экспорт результата (формат выбирается в диалоге: %s)"
+    const val exportDialogTitle = "Сохранить как"
+    const val listenIconCd = "слушать текущую версию"
+    const val stopIconCd = "остановить прослушивание"
+    // Форматы кнопки «Экспорт»: имена типов в системном диалоге — расширения
+    // (.mid/.musicxml/.abc — формулировка А.М.); «mid+ctx» — .mid и рядом
+    // файл кадровых признаков <имя>.frames.json (билд #38, замечание «в» —
+    // сводка извлекается из ядра всегда, включение в экспорт решает пользователь).
+    // value — Preferences.EXPORT_FORMATS
+    val EXPORT_FMT_NAMES = mapOf(
+        "mid" to ".mid",
+        "mid+ctx" to ".mid + признаки (.frames.json)",
+        "musicxml" to ".musicxml",
+        "abc" to ".abc",
+    )
+
     // Errors
     const val transcribeFailed = "транскрипция не удалась (см. stderr)"
     const val playFailed = "не удалось воспроизвести: %s"
     const val saveFailed = "не удалось записать %s (см. stderr)"
 
-    // Listen button: toggles into a stop control while MIDI playback runs
-    const val stopListen = "Остановить"
+    // Sandwich menu (top-right corner): options grouped by section. The
+    // «Слушать» group: one checkbox — where the «Слушать» button plays
+    // (off = in-app player, on = OS MIDI app). The «Вид» group: dark theme.
+    // The «Гистограмма» group: the t-scale slider (seconds visible in the
+    // chart view window).
+    const val listenMenu = "Слушать"
+    const val menuListenExternal = "внешний MIDI-плеер"
+    const val viewMenu = "Вид"
+    const val menuDarkTheme = "тёмная тема"
+    const val menuShowAbc = "ABC-notation" // Вид: показывать ABC-вкладку (билд #35, п.2)
+    const val chartMenu = "Гистограмма"
+    const val chartTScale = "t-масштаб: %.1f с"
+
+    // Инфо-пункты внизу меню (замечание А.М. 2026-09-06, п.7):
+    // «О программе» — ссылка на сайт разработчика, «Конфиденциальность» —
+    // краткий текст, «OSS credits» — компоненты и их лицензии.
+    const val menuAbout = "О программе"
+    const val menuPrivacy = "Конфиденциальность"
+    const val menuOss = "OSS credits"
+    const val dlgClose = "Закрыть"
+    const val dlgOk = "OK"
+    const val dlgCancel = "Отмена"
+
+    // ☰-меню «Файл признаков» (билд #38, замечание «б»): пункт «Автор»
+    // открывает диалог с именем автора — оно попадает в «meta» файла
+    // признаков <имя>.frames.json (сводка извлекается из ядра всегда).
+    const val framesMenuTitle = "Файл признаков"
+    const val menuAuthor = "Автор: %s" // %s — имя автора или authorNone
+    const val authorNone = "не указан"
+    const val authorDlgTitle = "Автор файла признаков"
+    const val authorDlgText = "Имя попадёт в «meta.author» файла признаков. Пусто — поле не указывается."
+    const val dlgOpenSite = "attplus.in ↗"
+    const val aboutText = "Транскрипция аудио в MIDI (C++-порт Basic Pitch, Kotlin/Compose)"
+    const val aboutDev = "Разработчик:"
+    const val privacyText = "Программа не собирает и не раскрывает никаких персональных данных. " +
+        "Ваше обращение по адресу разработчика является согласием на обработку данных, " +
+        "связанных с вашим обращением."
+    const val ossCredits = "Kotlin — Apache License 2.0\n" +
+        "kotlinx.coroutines — Apache License 2.0\n" +
+        "Compose Multiplatform (вкл. Material, Skiko) — Apache License 2.0\n" +
+        "Иконки Material — Apache License 2.0\n" +
+        "ONNX Runtime — MIT License\n" +
+        "Eigen — Mozilla Public License 2.0\n" +
+        "libremidi — BSD-2-Clause License\n" +
+        "Basic Pitch (Spotify) — Apache License 2.0 (алгоритм-основа)"
+
+    // Presets (замечание 2): метка + [Открыть] (выпадающий список) +
+    // [Сохранить] + поле наименования. Пользовательские пресеты хранятся
+    // в ~/.v2m/presets.properties как дифф от дефолтов движка.
+    const val presetLabel = "Пресет:"
+    const val presetOpen = "Открыть"
+    const val presetSave = "Сохранить"
+    const val presetNoName = "введите имя пресета"
 
     // Long-press help: English name, purpose, examples (README «Влияние»)
     val HELP: Map<String, ParamHelp> = mapOf(

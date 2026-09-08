@@ -1,6 +1,17 @@
 package com.v2m.app
 
-/** A note as parsed from a standard MIDI file (for display only). */
+/** Имя ноты с октавой: 60 -> "C4", 48 -> "C3", 61 -> "C#4" (MidiNote.name
+ *  и строки кадровых признаков FramesSummary ссылаются на неё — единое
+ *  место определения). */
+fun pitchName(pitch: Int): String {
+    val names = arrayOf("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
+    return names[pitch % 12] + (pitch / 12 - 1)
+}
+
+/** A note as parsed from a standard MIDI file (for display only).
+ *  [channel] — MIDI-канал события (для точных байтовых правок ноты);
+ *  [cents] — средний микротон ноты (в процентах полутона, −100..+100;
+ *  0 = чистый тон) — по питч-бендам канала за время звучания. */
 data class MidiNote(
     val startTick: Long,
     val endTick: Long,
@@ -8,16 +19,26 @@ data class MidiNote(
     val velocity: Int,
     val tempoUs: Long,
     val division: Int,
+    val channel: Int = 0,
+    val cents: Float = 0f,
 ) {
-    val name: String
-        get() {
-            val names = arrayOf("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
-            return names[pitch % 12] + (pitch / 12 - 1)
-        }
+    val name: String get() = pitchName(pitch)
     val startSec: Double get() = tickToSec(startTick, tempoUs, division)
     val endSec: Double get() = tickToSec(endTick, tempoUs, division)
     val durationQuarters: Double get() = (endTick - startTick).toDouble() / division
+
+    /** Отображаемый микротон: «+32%», «−40%», у чистых нот — пусто
+     *  (А.М. 2026-09-06: «у чистых нот процент сдвига не указывать»). */
+    val centsText: String get() {
+        val pct = Math.round(cents)
+        return if (pct == 0) "" else if (pct > 0) "+$pct%" else "$pct%"
+    }
 }
+
+/** Key of a note for selection/mute layers: tick in the high bits, pitch in
+ *  the low byte — unique per (startTick, pitch), survives re-parses. */
+fun noteKeyOf(startTick: Long, pitch: Int): Long = (startTick shl 8) or pitch.toLong()
+fun noteKeyOf(n: MidiNote): Long = noteKeyOf(n.startTick, n.pitch)
 
 /** Parsed song: notes plus the musical frame (tempo, time signature). */
 data class SongData(
@@ -37,7 +58,8 @@ data class SongData(
 private fun tickToSec(tick: Long, tempoUs: Long, division: Int): Double =
     tick.toDouble() / division * tempoUs / 1e6
 
-/** A display row: a note, or a rest between notes (chord notes share the tick). */
+/** A display row: a note, or a rest between notes (chord notes share the tick).
+ *  [startTick] — абсолютный тик начала (для слоёв muted/выделения). */
 data class NoteRow(
     val measure: Int,
     val beat: Double,
@@ -47,6 +69,7 @@ data class NoteRow(
     val isRest: Boolean,
     val startSec: Double,
     val endSec: Double,
+    val startTick: Long = 0L,
 )
 
 /** Notes with rests filled in between them, in playing order. */
@@ -65,7 +88,7 @@ fun buildRows(song: SongData): List<NoteRow> {
         rows += NoteRow(
             song.measureOf(n.startTick), song.beatOf(n.startTick), n.pitch,
             n.durationQuarters, n.velocity, false,
-            n.startSec, n.endSec,
+            n.startSec, n.endSec, n.startTick,
         )
         prevEnd = maxOf(prevEnd, n.endTick)
     }
@@ -96,8 +119,16 @@ fun parseMidiSong(midi: ByteArray): SongData {
     if (division and 0x8000 != 0) throw IllegalArgumentException("SMPTE не поддерживается")
     repeat((hlen - 6).toInt()) { u8() }
 
-    data class Active(val startTick: Long, val vel: Int)
+    // Средний микротон ноты (cents): питч-бенд канала действует с момента
+    // события до следующего bend; накопление по времени звучания ноты.
+    data class Active(
+        val startTick: Long, val vel: Int,
+        var segFrom: Long, // с какого тика действует текущий bend канала
+        var accVal: Long, // Σ raw-бенда × длительность участка
+        var accT: Long, // Σ длительность участков
+    )
     val active = HashMap<Long, Active>() // (channel<<8)|pitch -> note
+    val bendVal = IntArray(16) { 8192 } // действующий bend канала (центр по умолчанию)
     val notes = ArrayList<MidiNote>()
     var tempoUs = 500_000L
     var tsNum = 4
@@ -126,17 +157,43 @@ fun parseMidiSong(midi: ByteArray): SongData {
                 0x80, 0x90 -> {
                     val key = u8()
                     val vel = u8()
+                    val aKey = (chan.toLong() shl 8) or key.toLong()
                     if (type == 0x90 && vel > 0) {
-                        active[(chan.toLong() shl 8) or key.toLong()] = Active(tick, vel)
+                        active[aKey] = Active(tick, vel, tick, 0, 0)
                     } else {
-                        active.remove((chan.toLong() shl 8) or key.toLong())?.let { a ->
-                            notes.add(MidiNote(a.startTick, tick, key, a.vel, tempoUs, division))
+                        active.remove(aKey)?.let { a ->
+                            // Долить участок от последнего bend до конца ноты
+                            if (tick > a.segFrom) {
+                                a.accVal += bendVal[chan].toLong() * (tick - a.segFrom)
+                                a.accT += tick - a.segFrom
+                            }
+                            val cents = if (a.accT > 0) {
+                                ((a.accVal.toDouble() / a.accT - 8192.0) / 8192.0 * 200.0)
+                                    .toFloat().coerceIn(-100f, 100f)
+                            } else 0f
+                            notes.add(MidiNote(a.startTick, tick, key, a.vel, tempoUs, division, chan, cents))
                         }
                     }
                 }
                 0xA0, 0xB0 -> { u8(); u8() }
                 0xC0, 0xD0 -> { u8() }
-                0xE0 -> { u8(); u8() } // pitch bend — dropped for display
+                0xE0 -> { // pitch bend: value 0..16383, центр 8192
+                    val lsb = u8()
+                    val msb = u8()
+                    val v = ((msb and 0x7F) shl 7) or (lsb and 0x7F)
+                    // Накопить действующий bend по всем звучащим нотам канала
+                    if (v != bendVal[chan]) {
+                        for ((k, n) in active) {
+                            if ((k shr 8).toInt() != chan) continue
+                            if (tick > n.segFrom) {
+                                n.accVal += bendVal[chan].toLong() * (tick - n.segFrom)
+                                n.accT += tick - n.segFrom
+                            }
+                            n.segFrom = tick
+                        }
+                        bendVal[chan] = v
+                    }
+                }
                 0xF0 -> { // 0xFF meta events, 0xF0/0xF7 sysex
                     if (isMeta) {
                         val mtype = u8()

@@ -52,8 +52,15 @@ fun buildParamsJson(wavName: String, p: V2mEngine.Params, report: String, key: K
  *  stitches fragments; MuseScore misreads the tempo of such files (e.g. 95
  *  BPM shown as 119). Other events are copied verbatim, with full status
  *  bytes (no running status). Returns the input unchanged if it is not a
- *  valid SMF. */
-fun normalizeMidi(midi: ByteArray): ByteArray {
+ *  valid SMF.
+ *
+ *  [muted] (билд #35) — заглушенные ноты как noteKeyOf(startTick, pitch):
+ *  их Note-on'ы выбрасываются, а следующие Note-off'ы отпадают сами как
+ *  stray-релизы (нота не начиналась). Тики отсчитываются от начала трека —
+ *  ограничение общее для формата 1: muted-ключи построены парсером, для
+ *  многотрековых файлов с нотами не в первом треке возможны расхождения
+ *  (!ai; v2m-файлы практически однотрековые). */
+fun normalizeMidi(midi: ByteArray, muted: Set<Long> = emptySet()): ByteArray {
     if (midi.size < 14 || midi[0] != 'M'.code.toByte() || midi[1] != 'T'.code.toByte() ||
         midi[2] != 'h'.code.toByte() || midi[3] != 'd'.code.toByte()) return midi
     val hlen = ((midi[4].toInt() and 0xFF) shl 24) or ((midi[5].toInt() and 0xFF) shl 16) or
@@ -79,11 +86,14 @@ fun normalizeMidi(midi: ByteArray): ByteArray {
         val active = HashSet<Int>() // (channel shl 8) or pitch
         var running = 0
         var droppedDelta = 0 // tick distance of dropped events, paid forward to the next kept one
+        var tick = 0L // absolute tick within this track (muted matching)
         while (p < end) {
             val deltaStart = p
             while (p < end && (midi[p].toInt() and 0x80) != 0) p++
             if (p >= end) break
             p++ // last delta byte
+            val delta = readVlq(midi, deltaStart)
+            tick += delta
             var st = midi[p].toInt() and 0xFF
             val stPos = p
             if (st and 0x80 == 0) {
@@ -102,8 +112,10 @@ fun normalizeMidi(midi: ByteArray): ByteArray {
                     val note = midi[p].toInt() and 0xFF
                     val vel = midi[p + 1].toInt() and 0xFF
                     val key = (chan shl 8) or note
-                    if (type == 0x90 && vel > 0) drop = !active.add(key) // repeated attack
-                    else drop = !active.remove(key) // stray release
+                    if (type == 0x90 && vel > 0) {
+                        // repeated attack, or a muted note (started at this tick & pitch)
+                        drop = !active.add(key) || noteKeyOf(tick, note) in muted
+                    } else drop = !active.remove(key) // stray release
                     p += 2
                 }
                 0xA0, 0xB0, 0xE0 -> p += 2
@@ -127,9 +139,9 @@ fun normalizeMidi(midi: ByteArray): ByteArray {
                 // Keep the event's own delta-time: skipping it would pull every
                 // following note earlier and misalign bars (MuseScore then
                 // recalculates the tempo from the notes).
-                droppedDelta += readVlq(midi, deltaStart)
+                droppedDelta += delta
             } else {
-                writeVlq(body, readVlq(midi, deltaStart) + droppedDelta)
+                writeVlq(body, delta + droppedDelta)
                 droppedDelta = 0
                 if (stPos == dataStart) { // running status: re-insert the full status
                     body.write(st)
@@ -152,10 +164,16 @@ fun normalizeMidi(midi: ByteArray): ByteArray {
 }
 
 /** Append an extra track with a Sequencer Specific meta event (FF 7F)
- *  carrying the JSON; returns a new valid SMF file. */
+ *  carrying the JSON; returns a new valid SMF file. Every event in a track
+ *  — the first one and the end-of-track included — must be preceded by its
+ *  delta-time: without the zeros parsers (midicsv, MuseScore, our own
+ *  parseMidiSong) read the FF 7F bytes as a delta-time 16383 and then the
+ *  JSON payload as Note_off events on channel 3 — scattered "notes and
+ *  rests" across extra channels (приёмка #28, замечание 11). */
 fun midiWithMetaTrack(midi: ByteArray, json: String): ByteArray {
     val data = json.toByteArray(Charsets.UTF_8)
     val body = ByteArrayOutputStream()
+    body.write(0x00) // delta-time of the first event in a track
     body.write(0xFF); body.write(0x7F)
     var l = data.size
     val vlq = IntArray(4)
@@ -169,6 +187,7 @@ fun midiWithMetaTrack(midi: ByteArray, json: String): ByteArray {
     }
     for (k in i until 4) body.write(vlq[k])
     body.write(data)
+    body.write(0x00) // delta-time before end-of-track
     body.write(0xFF); body.write(0x2F); body.write(0x00) // end of track
 
     val track = ByteArrayOutputStream()

@@ -8,14 +8,17 @@ import java.util.Locale
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 
-/** Номер билда = номер пункта раздела истории (docs/history.md), описывающего билд. */
-private const val BUILD = 21
+/** Номер билда = номер записи в docs/history.md, описывающей этот билд
+ *  (записи идут подзаголовками с датой/временем, см. «Ход работ»).
+ *  internal — показывается в «О программе» (App.kt). */
+internal const val BUILD = 38
 
 fun main(args: Array<String>) {
     if (args.firstOrNull() == "--self-test") {
         selfTest()
         return
     }
+    if (Log.DEBUG) Log.install() // журнал кликов тестирования (билд #33)
     application {
         Window(onCloseRequest = ::exitApplication, title = "v2m #$BUILD — транскрипция аудио в MIDI") {
             App()
@@ -38,10 +41,59 @@ private fun selfTest() {
         error("wav read failed")
     }
     println("SELF-TEST: pcm=${pcm.size} sr=$sr")
+
+    // Presets (замечание 2): factory presets live in code as a named diff
+    // from the engine defaults; «02 нормальный» = empty diff. The user
+    // store is exercised on a temp file (never ~/.v2m).
+    val def = V2mEngine.Params.defaults()
+    check(FACTORY_PRESETS.map { it.name } == listOf("01 чуткий", "02 нормальный", "03 авто")) { "factory names: ${FACTORY_PRESETS.map { it.name }}" }
+    check(FACTORY_PRESETS[1].diffs.isEmpty()) { "«02 нормальный» must be an empty diff" }
+    check(presetParams(FACTORY_PRESETS[1], 5) == def.copy(program = 5)) { "«02 нормальный» must equal the engine defaults" }
+    check(presetParams(FACTORY_PRESETS[0], 5).onsetThreshold < def.onsetThreshold) { "«01 чуткий» must lower the onset threshold" }
+    check(presetParams(FACTORY_PRESETS[2], 5).quantize == 1) { "«03 авто» must enable quantize=auto" }
+    // Нижние границы «Ритмики» (замечание А.М. 2026-09-06): мин. длина ноты
+    // от 99 мс (9 кадров ≈ 104 мс), тремоло от 50 мс (5 кадров ≈ 58 мс).
+    // Клампы paramsFromProps держат минимум и для prefs, и для пресетов.
+    val low = presetParams(Preset("low", mapOf("minNoteLen" to "1", "energyTol" to "0")), 5)
+    check(low.minNoteLen == MIN_NOTE_LEN_FRAMES && low.energyTol == MIN_ENERGY_TOL_FRAMES) {
+        "rhythm floor clamps: ${low.minNoteLen}/${low.energyTol}" }
+    check(FACTORY_PRESETS[0].diffs["minNoteLen"] == MIN_NOTE_LEN_FRAMES.toString()) {
+        "«01 чуткий» minNoteLen at the floor" }
+    // Saving the current settings keeps only keys that differ from the
+    // defaults (no program — the instrument is a separate user choice).
+    val tuned = def.copy(onsetThreshold = 0.33f, quantize = 2)
+    val store = PresetStore(File(outDir, "presets-test.properties"))
+    store.save(Preset("мой тест", diffFromDefaults(tuned, 7, 9)))
+    val loaded = store.load("мой тест")
+    check(loaded != null) { "store load after save" }
+    check(presetParams(loaded!!, def.program) == tuned) { "diff round-trip: $loaded" }
+    check(presetKeySel(loaded) == 7 && presetSmoothing(loaded) == 9) { "preset keySel/smoothing: $loaded" }
+    check("program" !in loaded.diffs && "onsetThreshold" in loaded.diffs && "tempoBpm" !in loaded.diffs) { "diff keys: ${loaded.diffs}" }
+    // A name is unique: saving over an existing name replaces the entry.
+    store.save(Preset("мой тест", emptyMap()))
+    check(store.list().size == 1 && store.load("мой тест")?.diffs?.isEmpty() == true) { "store upsert: ${store.list()}" }
+    check(store.load("нет такого") == null) { "store miss must be null" }
+    println("SELF-TEST: presets: " + FACTORY_PRESETS.joinToString { it.name } + " + store ok")
+
     val params = V2mEngine.Params.defaults().copy(harmonizeMerge = 1, modeSnap = 1f)
     val midi = V2mEngine.transcribe(pcm, sr, params)
         ?: error("transcribe failed")
     println("SELF-TEST: midi bytes=${midi.size} header=" + midi.copyOfRange(0, 4).joinToString { "%02x".format(it) })
+    // Кадровая сводка (билд #38, замечание «в»): извлекается из ядра всегда,
+    // pretty-JSON с переносами строк (замечание «а»), схема v2m-frame-
+    // features-2, «meta» со временем прогона «ts» (замечание «б»; track/
+    // author пусты — здесь прогон без них)
+    val fj = V2mEngine.lastFramesJson()
+    val fjLines = fj.lines().size
+    println("SELF-TEST: frames summary lines=$fjLines head:\n" + fj.lines().take(9).joinToString("\n"))
+    check(fjLines >= 20) { "frames summary must be pretty (multi-line): $fjLines lines" }
+    check(fj.contains("\"schema\":\"v2m-frame-features-2\"")) { "frames schema: " + fj.take(120) }
+    check(fj.contains("\"meta\": {") && Regex("\"ts\": \"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\"").containsMatchIn(fj)) {
+        "frames meta ts missing: " + fj.take(200) }
+    val sumLine = framesSummaryLine(fj)
+    println("SELF-TEST: summary line: $sumLine")
+    check(sumLine != null && sumLine.startsWith("признаки: ")) { "summary line: $sumLine" }
+    check(framesSummaryLine(null) == null && framesSummaryLine("{}") == null) { "summary line on garbage must be null" }
     val midiFile = File(outDir, "test4.mid")
     midiFile.writeBytes(midi)
     // fifths = 6 (F# major) also verifies the rebuilt libv2m.so: the old
@@ -217,6 +269,18 @@ private fun selfTest() {
     println("SELF-TEST: FF 59: " + (ff59?.joinToString { "%02x".format(it.toInt() and 0xFF) } ?: "not found"))
     check(ff59 != null && ff59[2] == 0x02.toByte() && ff59[3] == 0xFD.toByte() && ff59[4] == 0x01.toByte()) { "FF 59 bytes: ${ff59?.joinToString { "%02x".format(it.toInt() and 0xFF) }}" }
     check(finalizeMidi(withMeta, null, null, null) contentEquals withMeta) { "finalizeMidi(null key) must return the input unchanged" }
+
+    // Note-tone mini-SMF for chart/ABC clicks (замечание 8): the note itself —
+    // pitch, velocity, and the stock 1/8 s duration (120 ticks of 480 at
+    // 120 BPM); program = the export instrument (12 = GM «Marimba»).
+    val tone = noteToneMidi(69, 100, 12) // A4, vel 100
+    val toneSong = parseMidiSong(tone)
+    val tn = toneSong.notes.singleOrNull()
+    println("SELF-TEST: note tone: pitch=${tn?.pitch}, vel=${tn?.velocity}, dur=${tn?.let { it.endSec - it.startSec }}")
+    check(tn != null && tn.pitch == 69 && tn.velocity == 100) { "note tone pitch/velocity: ${tn?.pitch}/${tn?.velocity}" }
+    check(tn != null && kotlin.math.abs(tn.endSec - tn.startSec - 0.125) < 0.001) { "note tone duration: ${tn?.let { it.endSec - it.startSec }} s (expect 0.125)" }
+    check(tempoEvents(tone) == listOf(500000)) { "note tone tempo events: ${tempoEvents(tone)}" }
+    check(tone.toList().windowed(2).any { it[0] == 0xC0.toByte() && it[1] == 0x0C.toByte() }) { "note tone program change (12) missing" }
     try {
         val proc = ProcessBuilder("midicsv", keyedFile.absolutePath).redirectErrorStream(true).start()
         val csv = proc.inputStream.bufferedReader().readText()
@@ -241,8 +305,8 @@ private fun selfTest() {
         println("SELF-TEST: midicsv counIn Tempo=${tempos(ccsv)} (expect [500000]), Note_on=${noteOns(ccsv)} (expect 5)")
         check(tempos(ccsv) == listOf("500000")) { "counIn Tempo via midicsv: ${tempos(ccsv)}" }
         check(noteOns(ccsv) == 5) { "counIn Note_on via midicsv: ${noteOns(ccsv)}" }
-        println("SELF-TEST: midicsv tonica Tempo=${tempos(tcsv)} (expect [500000, 333333]), Note_on=${noteOns(tcsv)} (expect 6)")
-        check(tempos(tcsv) == listOf("500000", "333333")) { "tonica Tempo via midicsv: ${tempos(tcsv)}" }
+        println("SELF-TEST: midicsv tonica Tempo=${tempos(tcsv)} (expect [333333]), Note_on=${noteOns(tcsv)} (expect 6)")
+        check(tempos(tcsv) == listOf("333333")) { "tonica Tempo via midicsv: ${tempos(tcsv)}" }
         check(noteOns(tcsv) == 6) { "tonica Note_on via midicsv: ${noteOns(tcsv)}" }
     } catch (e: Exception) {
         println("SELF-TEST: midicsv not available, skip key/sample csv checks (${e.message})")
@@ -355,12 +419,76 @@ private fun selfTest() {
         proc.waitFor()
         val noteOns = Regex("Note_on_c").findAll(csv).count()
         val progLine = Regex("Program_c, 0, (\\d+)").find(csv)?.groupValues?.get(1)
-        println("SELF-TEST: midicsv Note_on=$noteOns (expect ${song.notes.size}), Program_c=$progLine (expect 24)")
+        // Замечание 11 (MuseScore «4 канала»): мета-трек обязан читаться как
+        // один Sequencer_specific; без дельты 00 перед FF 7F парсеры видели
+        // байты JSON как Note_off на канале 3 — здесь это ловится.
+        val chan3 = Regex("Note_(?:on|off)_c, 3,").findAll(csv).count()
+        val metaEvents = Regex("Sequencer_specific").findAll(csv).count()
+        println("SELF-TEST: midicsv Note_on=$noteOns (expect ${song.notes.size}), Program_c=$progLine (expect 24), " +
+                "chan3-events=$chan3 (expect 0), meta-track events=$metaEvents (expect 1)")
         check(noteOns == song.notes.size) { "midicsv sees $noteOns note-ons, expected ${song.notes.size}" }
         check(progLine == "24") { "midicsv sees program $progLine, expected 24" }
+        check(chan3 == 0 && metaEvents == 1) { "meta track must parse as one Sequencer_specific (chan-3 junk: $chan3)" }
     } catch (e: Exception) {
         println("SELF-TEST: midicsv not available, skip cross-check (${e.message})")
     }
+
+    // Билд #35: микротон клик-тона (cents → bend), правка высоты ноты
+    // (retuneNoteMidi, сброс микротона), фильтр заглушенных [X]
+    // (normalizeMidi + muted-ключ), экспорт abc (exportAbc/abcLenExport).
+    val tone30 = noteToneMidi(69, 100, 12, cents = 30f) // A4 + 30% полутона
+    val t30 = parseMidiSong(tone30).notes.single()
+    println("SELF-TEST: tone cents=${t30.cents} '${t30.centsText}' (expect ~30 '+30%')")
+    check(kotlin.math.abs(t30.cents - 30f) < 0.5f) { "tone cents: ${t30.cents}" }
+    check(t30.centsText == "+30%") { "centsText: ${t30.centsText}" }
+    val tonePlainBytes = noteToneMidi(69, 100, 12)
+    val tPlain = parseMidiSong(tonePlainBytes).notes.single()
+    check(tPlain.cents == 0f && tPlain.centsText.isEmpty()) { "clean tone must carry no cents" }
+    // Правка [<]/[>]: на микротон-ноте первый шаг — к чистой высоте (d=0
+    // выбрасывает бенды ноты, высота не меняется); хроматический шаг — +1
+    val d0 = retuneNoteMidi(tone30, 0L, 120L, 69, 0, 0)
+    check(d0 !== tone30) { "retune-to-clean must rewrite (bends dropped)" }
+    val dn = parseMidiSong(d0).notes.single()
+    check(dn.pitch == 69 && dn.cents == 0f) { "retune to clean: p=${dn.pitch} cents=${dn.cents}" }
+    val up = retuneNoteMidi(tone30, 0L, 120L, 69, 0, 1)
+    val un = parseMidiSong(up).notes.single()
+    check(un.pitch == 70 && un.cents == 0f) { "retune chromatic up: p=${un.pitch} cents=${un.cents}" }
+    // Чистый файл без бендов: miss-нота и пустой шаг не меняют байты
+    check(retuneNoteMidi(tonePlainBytes, 0L, 120L, 60, 0, 1) === tonePlainBytes) { "retune miss must return the input unchanged" }
+    check(retuneNoteMidi(tonePlainBytes, 0L, 120L, 69, 0, 0) === tonePlainBytes) { "retune delta 0 on a clean note must return the input unchanged" }
+    // Заглушенная [X] нота (п.4): с muted-ключом исчезает из нормализации,
+    // прочие ноты — как в нормализации без mute (ровно на одну меньше)
+    val uniq = song.notes.groupBy { noteKeyOf(it) }.entries.first { it.value.size == 1 }.value.first()
+    val plainNorm = normalizeMidi(midi)
+    val mutedMidi = normalizeMidi(midi, setOf(noteKeyOf(uniq)))
+    val mutedSong = parseMidiSong(mutedMidi)
+    val plainSong = parseMidiSong(plainNorm)
+    check(mutedSong.notes.none { it.startTick == uniq.startTick && it.pitch == uniq.pitch }) {
+        "muted note must disappear: p=${uniq.pitch} t=${uniq.startTick}" }
+    check(mutedSong.notes.size == plainSong.notes.size - 1) {
+        "mute must drop exactly one note: ${plainSong.notes.size} -> ${mutedSong.notes.size}" }
+    // Экспорт abc (п.6): заголовки, барлайны, без «~»; нулевые длины не
+    // экспортируются («ноты нулевой длины не экспортируются», А.М.)
+    check(abcLenExport(0.5) == "1" && abcLenExport(1.0) == "2" && abcLenExport(0.75) == "3/2"
+        && abcLenExport(0.25) == "1/2" && abcLenExport(0.44) == "7/8") { "abcLenExport dyadics" }
+    val abc = exportAbc(midi, "test", key)
+    println("SELF-TEST: abc head:\n" + abc.lines().take(10).joinToString("\n"))
+    check(abc.startsWith("X:1\nT:test\nM:") ) { "abc header: " + abc.lineSequence().firstOrNull() }
+    if (key != null) check(abc.lines().any { it.startsWith("K:") }) { "abc K: line missing" }
+    check(!abc.contains('~')) { "abc file must not contain ~ markers" }
+    check(abc.lines().any { Regex("[A-Ga-g][,']*\\d+").containsMatchIn(it) }) { "abc must contain notes" }
+    // Нулевая длина: дельта перед NoteOff — 0, нота из 0 тиков — в abc
+    // не появляется («ноты нулевой длины не экспортируются», п.6)
+    val zeroRaw = noteToneMidi(60, 100, 12)
+    val zeroLen = zeroRaw.copyOf().also { it[zeroRaw.toList().indexOf(0x78)] = 0x00 }
+    val zeroSong = parseMidiSong(zeroLen)
+    val zeroAbc = exportAbc(zeroLen, "zero", null)
+    println("SELF-TEST: zero-length note (${zeroSong.notes.size} parsed, dur=${zeroSong.notes.firstOrNull()?.endTick?.minus(zeroSong.notes.first().startTick)}) abc=${zeroAbc.lines().take(4).joinToString(" | ")}")
+    check(zeroSong.notes.isEmpty() || zeroAbc.lines().none { Regex("[A-Ga-g][,']*\\d+").containsMatchIn(it) }) {
+        "zero-length notes must not be exported" }
+    val abcFile = File(outDir, "test4.abc")
+    abcFile.writeText(abc)
+    println("SELF-TEST: ${abcFile.name} bytes=${abcFile.length()}")
 }
 
 /** A real transcription for the notes-table example. The worktree has no

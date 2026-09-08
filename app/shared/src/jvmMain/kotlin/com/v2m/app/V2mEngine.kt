@@ -11,11 +11,13 @@ object V2mEngine {
     }
 
     private external fun nativeParamsDefault(): DoubleArray
-    private external fun nativeTranscribe(
+    private external fun nativeTranscribeFrames(
         pcm: FloatArray, sampleRate: Int, params: DoubleArray,
     ): ByteArray?
+    private external fun nativeSetFramesMeta(track: String?, author: String?)
     private external fun nativeMidiToMusicXml(midi: ByteArray, path: String, clef: Int, fifths: Int, anacrusis: Int): Boolean
     private external fun nativeLastReport(): String
+    private external fun nativeLastFramesJson(): String
 
     /** All transcription knobs; order matches the native V2mParams. */
     data class Params(
@@ -72,9 +74,30 @@ object V2mEngine {
         }
     }
 
-    /** PCM mono (any sample rate) -> standard MIDI file bytes, or null on error. */
-    fun transcribe(pcm: FloatArray, sampleRate: Int, params: Params, verbose: Boolean = false): ByteArray? =
-        nativeTranscribe(pcm, sampleRate, params.toArray(verbose))
+    /** PCM mono (any sample rate) -> standard MIDI file bytes, or null on
+     *  error. Every transcription also condenses the raw per-frame model
+     *  output into a features summary (see [lastFramesJson]) — it exists
+     *  only in the run, so it is always computed and the export decides
+     *  whether to write it to disk (билд #38). [track]/[author] go to the
+     *  summary "meta" (track = the audio file name without extension).
+     *  A mismatched (older) libv2m.so surfaces loudly, not silently. */
+    fun transcribe(
+        pcm: FloatArray, sampleRate: Int, params: Params,
+        track: String? = null, author: String? = null, verbose: Boolean = false,
+    ): ByteArray? {
+        val a = params.toArray(verbose)
+        try {
+            nativeSetFramesMeta(track, author)
+        } catch (e: UnsatisfiedLinkError) {
+            throw IllegalStateException(
+                "libv2m.so устарела: пересоберите basicpitch/src/libv2m (nativeSetFramesMeta)", e)
+        }
+        return nativeTranscribeFrames(pcm, sampleRate, a)
+    }
+
+    /** Frame-features summary JSON (schema v2m-frame-features-2) of the
+     *  last [transcribe]; "" when none was produced. */
+    fun lastFramesJson(): String = nativeLastFramesJson()
 
     /** Write a MusicXML file next to the MIDI bytes. [clef]: 0 = G
      *  (treble), 1 = F (bass). [fifths]: the <key><fifths> value (−7..7);
