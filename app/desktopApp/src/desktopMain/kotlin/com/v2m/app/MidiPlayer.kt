@@ -1,8 +1,12 @@
 package com.v2m.app
 
 import java.io.ByteArrayInputStream
+import java.util.Locale
+import javax.sound.midi.MidiMessage
 import javax.sound.midi.MidiSystem
+import javax.sound.midi.Receiver
 import javax.sound.midi.Sequencer
+import javax.sound.midi.ShortMessage
 import javax.sound.midi.Synthesizer
 
 /** In-app SMF playback (no temp file, no external player): the JDK
@@ -21,6 +25,16 @@ object MidiPlayer {
     private var diagnosed = false
 
     val isPlaying: Boolean get() = synchronized(lock) { done != null }
+
+    /** Позиция текущего воспроизведения в секундах от начала файла
+     *  (п.5а приёмки #43): UI опрашивает в своём цикле тиков; 0, когда
+     *  ничего не играет (после конца/стопа — [watch]/[stop] сбросили seq). */
+    val positionSec: Double
+        get() {
+            val q = synchronized(lock) { if (done == null) null else seq }
+                ?: return 0.0
+            return runCatching { q.microsecondPosition / 1e6 }.getOrDefault(0.0)
+        }
 
     /** Start [midi] (a complete SMF file). Returns null on success or a
      *  user-readable error text. [onEnd] runs once on a background thread
@@ -44,7 +58,10 @@ object MidiPlayer {
                 throw IllegalStateException(
                     "в этой JVM нет звукового банка — синтезатор будет без звука")
             }
-            q.transmitter.receiver = s.receiver
+            // Между Sequencer и Synthesizer — прозрачный приёмник уровня
+            // (билд #40): все события пробрасываются синтезатору без
+            // изменений, а «громкость нот» публикуется в AudioLevel.midi.
+            q.transmitter.receiver = MeterReceiver(s.receiver)
             q.sequence = MidiSystem.getSequence(ByteArrayInputStream(midi))
             synchronized(lock) {
                 seq = q
@@ -86,6 +103,7 @@ object MidiPlayer {
         }
         if (q != null) runCatching { q.close() }
         if (s != null) runCatching { s.close() }
+        AudioLevel.midi = 0f // воспроизведение кончилось — уровень гаснет
         cb?.invoke()
     }
 
@@ -113,6 +131,7 @@ object MidiPlayer {
         }
         runCatching { q.close() }
         runCatching { s.close() }
+        AudioLevel.midi = 0f
         cb?.invoke()
     }
 
@@ -127,4 +146,49 @@ object MidiPlayer {
             "банк «${s.defaultSoundbank?.name ?: "нет"}», " +
             "инструментов загружено: ${s.loadedInstruments.size}")
     }
+}
+
+/** Прозрачный приёмник между Sequencer и Synthesizer (билд #40): все
+ *  события уходят синтезатору без изменений (ошибки синтезатора летят
+ *  дальше, как при прямом подключении), а «громкость нот» — сумма velocity
+ *  звучащих нот — публикуется в AudioLevel.midi. Полная шкала: 4 ноты fff
+ *  (127×4); паузы дают 0 — полоса «в молчании» гаснет. */
+private class MeterReceiver(private val next: Receiver) : Receiver {
+    private val vel = Array(16) { ShortArray(128) } // [канал][питч] → velocity
+    private var sum = 0
+    private var lastLog = 0L
+
+    override fun send(msg: MidiMessage?, timeStamp: Long) {
+        try {
+            if (msg is ShortMessage) {
+                val ch = msg.channel
+                val p = msg.data1
+                val on = msg.command == ShortMessage.NOTE_ON
+                val off = msg.command == ShortMessage.NOTE_OFF
+                if (on || off) {
+                    val v = if (on && msg.data2 > 0) msg.data2 else 0
+                    val old = vel[ch][p].toInt()
+                    if (old != v) {
+                        vel[ch][p] = v.toShort()
+                        sum += v - old
+                        AudioLevel.midi = minOf(1f, sum / (127f * 4f))
+                        val now = System.currentTimeMillis()
+                        if (now - lastLog >= 500) { // debug-метка [midi] (билд #41)
+                            lastLog = now
+                            Log.d("midi", "уровень нот: sum=$sum/508" +
+                                (if (sum > 0) " (" +
+                                    "%.1f".format(Locale.ROOT, levelDb(sum / 508f)) +
+                                    " dBFS)" else " (−∞ dBFS)"))
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // метр не должен мешать звуку
+        } finally {
+            next.send(msg, timeStamp)
+        }
+    }
+
+    override fun close() = next.close()
 }

@@ -11,7 +11,7 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 /** Номер билда = номер записи в docs/history.md, описывающей этот билд
  *  (записи идут подзаголовками с датой/временем, см. «Ход работ»).
  *  internal — показывается в «О программе» (App.kt). */
-internal const val BUILD = 38
+internal const val BUILD = 46
 
 fun main(args: Array<String>) {
     if (args.firstOrNull() == "--self-test") {
@@ -41,6 +41,18 @@ private fun selfTest() {
         error("wav read failed")
     }
     println("SELF-TEST: pcm=${pcm.size} sr=$sr")
+
+    // Билд #43: проба JNI-слоя записи. JNI-символы резолвятся лениво — без
+    // пробы устаревшая libv2m.so прошла бы самотест и упала бы при живой
+    // записи (UnsatisfiedLinkError). Заодно доказывает влинкованный asound.
+    val captureProbe = try {
+        NativeCapture().selftest()
+    } catch (e: UnsatisfiedLinkError) {
+        throw IllegalStateException(
+            "libv2m.so устарела: пересоберите basicpitch/src/libv2m (JNI захвата отсутствует)", e)
+    }
+    println("SELF-TEST: capture probe: $captureProbe")
+    check(captureProbe.startsWith("alsa-ok")) { "capture selftest: $captureProbe" }
 
     // Presets (замечание 2): factory presets live in code as a named diff
     // from the engine defaults; «02 нормальный» = empty diff. The user

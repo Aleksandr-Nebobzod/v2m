@@ -16,6 +16,12 @@ internal const val MIN_NOTE_LEN_FRAMES = 9
 internal const val MIN_ENERGY_TOL_FRAMES = 5
 internal const val FRAME_MS = 11.61f
 
+/** Полный фортепианный диапазон (88 клавиш A0..C8, билд #46) — границы
+ *  фильтра нот по умолчанию (движки в ☰-меню «Гистограмма»). Единое место
+ *  определения: дефолты prefs и valueRange слайдера (App.kt). */
+internal const val PITCH_LO_DEFAULT = 21 // A0
+internal const val PITCH_HI_DEFAULT = 108 // C8
+
 /** Persistent user preferences: transcription parameters, instrument,
  *  keySel (the "Тональность" slider), smoothingWindow and the last used
  *  file paths. Stored as a properties file in ~/.v2m/prefs.properties —
@@ -38,6 +44,8 @@ object Preferences {
         val author: String, // ☰-меню: автор (метаданные файла признаков, билд #38; пусто = не указан)
         val presetName: String?, // последний применённый пресет (билд #38, замечание «д»: имя видно при старте)
         val tScale: Float, // гистограмма: сколько секунд музыки видно в окне канвы, 1..10 (3.0)
+        val pitchLo: Int, // фильтр нот (билд #46): нижняя граница питча, 0..127 (A0)
+        val pitchHi: Int, // фильтр нот (билд #46): верхняя граница питча, 0..127 (C8)
         val lastWav: String?,
         val lastMidi: String?,
         val lastXml: String?,
@@ -66,6 +74,10 @@ object Preferences {
             author = p.getProperty("author") ?: "",
             presetName = p.getProperty("presetName")?.takeIf { it.isNotEmpty() },
             tScale = f("tScale", 3f, 1f, 10f),
+            // Фильтр нот (билд #46): хранится как есть, но с инвариантом
+            // lo <= hi — при ручной правке файла границы не путаются местами
+            pitchLo = i("pitchLo", PITCH_LO_DEFAULT, 0, 127).coerceAtMost(i("pitchHi", PITCH_HI_DEFAULT, 0, 127)),
+            pitchHi = i("pitchHi", PITCH_HI_DEFAULT, 0, 127).coerceAtLeast(i("pitchLo", PITCH_LO_DEFAULT, 0, 127)),
             lastWav = p.getProperty("lastWav"),
             lastMidi = p.getProperty("lastMidi"),
             lastXml = p.getProperty("lastXml"),
@@ -153,6 +165,8 @@ object Preferences {
         author: String,
         presetName: String?,
         tScale: Float,
+        pitchLo: Int,
+        pitchHi: Int,
         lastWav: String?,
         lastMidi: String?,
         lastXml: String?,
@@ -168,6 +182,8 @@ object Preferences {
         p.setProperty("author", author)
         presetName?.let { p.setProperty("presetName", it) }
         p.setProperty("tScale", tScale.toString())
+        p.setProperty("pitchLo", pitchLo.toString())
+        p.setProperty("pitchHi", pitchHi.toString())
         lastWav?.let { p.setProperty("lastWav", it) }
         lastMidi?.let { p.setProperty("lastMidi", it) }
         lastXml?.let { p.setProperty("lastXml", it) }

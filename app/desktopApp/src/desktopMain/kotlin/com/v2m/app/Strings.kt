@@ -8,6 +8,11 @@ object Strings {
     // Buttons and file picker
     const val wavButton = "Выбрать WAV"
     const val noFile = "файл не выбран"
+    const val recCd = "Записать с микрофона"
+    const val recCountdownCd = "Запуск записи через %d… (нажмите — отменить)"
+    const val recStopCd = "Остановить запись"
+    const val recUnavailable = "микрофон недоступен"
+    const val saveRecTitle = "Сохранить запись"
     const val transcribe = "Транскрипт"
     const val busy = "Идёт обработка..."
     const val listen = "Слушать"
@@ -136,6 +141,10 @@ object Strings {
     const val exportDialogTitle = "Сохранить как"
     const val listenIconCd = "слушать текущую версию"
     const val stopIconCd = "остановить прослушивание"
+    // Кнопка ▶ источника (п.1 приёмки #43; билд #45 — замечание «б»
+    // приёмки #44): запись, а без неё — загруженный внешний файл
+    const val recListenCd = "прослушать запись или загруженный файл"
+    const val recStopListenCd = "остановить воспроизведение"
     // Форматы кнопки «Экспорт»: имена типов в системном диалоге — расширения
     // (.mid/.musicxml/.abc — формулировка А.М.); «mid+ctx» — .mid и рядом
     // файл кадровых признаков <имя>.frames.json (билд #38, замечание «в» —
@@ -165,6 +174,10 @@ object Strings {
     const val menuShowAbc = "ABC-notation" // Вид: показывать ABC-вкладку (билд #35, п.2)
     const val chartMenu = "Гистограмма"
     const val chartTScale = "t-масштаб: %.1f с"
+    // Фильтр нот (билд #46, замечание «б» приёмки #45): показ и экспорт нот
+    // в диапазоне питчей; %s — «A0» / «C8» (границы, pitchName)
+    const val chartRange = "диапазон нот: %s – %s"
+    const val chartRangeHint = "ноты вне диапазона скрыты на «Тонах» и в ABC и не попадают в экспорт"
 
     // Инфо-пункты внизу меню (замечание А.М. 2026-09-06, п.7):
     // «О программе» — ссылка на сайт разработчика, «Конфиденциальность» —
@@ -204,7 +217,7 @@ object Strings {
     // в ~/.v2m/presets.properties как дифф от дефолтов движка.
     const val presetLabel = "Пресет:"
     const val presetOpen = "Открыть"
-    const val presetSave = "Сохранить"
+    const val saveLabel = "Сохранить"
     const val presetNoName = "введите имя пресета"
 
     // Long-press help: English name, purpose, examples (README «Влияние»)

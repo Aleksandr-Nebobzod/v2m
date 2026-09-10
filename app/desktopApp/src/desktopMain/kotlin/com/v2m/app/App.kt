@@ -2,8 +2,16 @@ package com.v2m.app
 
 import java.util.Locale
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -23,20 +31,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.v2m.app.resources.Res
 import com.v2m.app.resources.metronome
 import com.v2m.app.resources.music_note_2
 import com.v2m.app.resources.play
 import com.v2m.app.resources.stop
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.painterResource
@@ -132,12 +145,26 @@ private fun Collapsible(title: String, defaultOpen: Boolean = false, content: @C
 }
 
 @Composable
+@OptIn(ExperimentalMaterialApi::class) // RangeSlider (билд #46)
 fun App() {
     val prefs = remember { Preferences.load() }
     var darkTheme by remember { mutableStateOf(prefs.darkTheme) } // ☰-меню «Вид»: тёмная тема
     MaterialTheme(colors = if (darkTheme) darkColors() else lightColors()) {
         var params by remember { mutableStateOf(prefs.params) }
         var wavFile by remember { mutableStateOf<File?>(null) }
+        // Длительность загруженного внешнего файла (из заголовка WAV) —
+        // таймер в покое, когда записи нет (замечание «б» приёмки #44)
+        var wavDurSec by remember { mutableStateOf<Int?>(null) }
+        // Р14 — запись с микрофона: свежая запись — текущий вход транскрипции
+        // (в приоритете над выбранным файлом); [Сохранить] фиксирует копию на диск.
+        var rec by remember { mutableStateOf<AudioCapture.Result?>(null) }
+        var recName by remember { mutableStateOf<String?>(null) } // автоимя «rec_…wav»
+        var recSaved by remember { mutableStateOf(false) }
+        var recPhase by remember { mutableStateOf(RecPhase.Idle) }
+        var recCountdown by remember { mutableStateOf(3) } // цифра отсчёта (таймер «−0:0N»)
+        var recElapsed by remember { mutableStateOf(0) } // секунды записи (таймер «m:ss», билд #40)
+        var meterLevel by remember { mutableStateOf(0f) } // полоса уровня: сглаженный уровень источника
+        var capture by remember { mutableStateOf<AudioCapture?>(null) }
         var busy by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf<String?>(null) }
         var keySel by remember { mutableStateOf(prefs.keySel) } // 0 = авто, 1..24 (см. Key.kt)
@@ -161,6 +188,11 @@ fun App() {
         var versions by remember { mutableStateOf(listOf<Version>()) }
         var selected by remember { mutableStateOf(0) }
         var playing by remember { mutableStateOf(false) } // встроенный MIDI-плеер звучит (кнопка «Слушать»)
+        // Воспроизведение записи (п.1 приёмки #43): ▶ справа от таймера —
+        // WavPlayer; playPosSec — текущая позиция любого воспроизведения
+        // (п.5: индикатор от начала + полоска канваса), -1 = ничего не играет
+        var recPlaying by remember { mutableStateOf(false) }
+        var playPosSec by remember { mutableStateOf(-1f) }
         // «Звучание»: 0 = «Кванты» (ритмика, Вход), 1 = «Тоны» (мелодика,
         // Выход), 2 = ABC (замечание 8; билд #35, п.3 — переименованы)
         var notesTab by remember { mutableStateOf(if (prefs.showAbc) 2 else 1) }
@@ -171,6 +203,11 @@ fun App() {
         var author by remember { mutableStateOf(prefs.author) }
         var selectedKey by remember { mutableStateOf<Long?>(null) } // выделенная нота (п.4): noteKeyOf — рамка на «Тонах»
         var tScale by remember { mutableStateOf(prefs.tScale) } // гистограмма: секунд видно в окне канвы, 1..10 (3.0)
+        // Фильтр нот (билд #46, замечание «б» приёмки #45): границы питча,
+        // ноты вне которых скрыты на «Тонах» и в ABC и не экспортируются
+        // («Кванты» — Вход — не фильтруются)
+        var pitchLo by remember { mutableStateOf(prefs.pitchLo) }
+        var pitchHi by remember { mutableStateOf(prefs.pitchHi) }
         // «Пресет:» наименование — последний применённый/сохранённый пресет
         // виден при старте (билд #38, замечание «д»: пресет был, но не
         // отображался — поле не загружалось); для сохранения — подставляется
@@ -190,7 +227,7 @@ fun App() {
             Preferences.save(params, keySel, smoothingWindow, instrument, clef, anacrusis,
                 listenExternal, darkTheme, showAbc, exportFmt, author,
                 presetNameText.trim().takeIf { it.isNotEmpty() }, // пусто = пресет не хранится
-                tScale, lastWavDir, lastMidiDir, lastXmlDir)
+                tScale, pitchLo, pitchHi, lastWavDir, lastMidiDir, lastXmlDir)
         }
 
         /** Применить пресет (замечание 2): дефолты движка + диффы пресета;
@@ -235,9 +272,11 @@ fun App() {
          *  attacks / stray releases — MuseScore misreads the tempo of such
          *  files), instrument patch + final tempo/size/key overrides.
          *  [muted] (билд #35) — заглушенные [X] ноты: не звучат и не
-         *  экспортируются («ноты нулевой длины не экспортируются», п.6). */
+         *  экспортируются («ноты нулевой длины не экспортируются», п.6);
+         *  фильтр [pitchLo..pitchHi] (билд #46) применяется здесь же —
+         *  ед. точка: прослушивание и все форматы экспорта консистентны. */
         fun exportMidi(midi: ByteArray, key: KeyInfo?, muted: Set<Long> = emptySet()): ByteArray =
-            finalizeMidi(normalizeMidi(patchProgram(midi, instrument), muted),
+            finalizeMidi(normalizeMidi(patchProgram(midi, instrument), muted, pitchLo..pitchHi),
                 finalTempoOverride, finalSizeOverride, key)
 
         DisposableEffect(Unit) {
@@ -245,7 +284,7 @@ fun App() {
         }
 
         // Persist on every change so an abrupt exit (crash, kill) loses nothing.
-        LaunchedEffect(params, keySel, smoothingWindow, instrument, clef, anacrusis, listenExternal, darkTheme, showAbc, exportFmt, author, tScale) { savePrefs() }
+        LaunchedEffect(params, keySel, smoothingWindow, instrument, clef, anacrusis, listenExternal, darkTheme, showAbc, exportFmt, author, tScale, pitchLo, pitchHi) { savePrefs() }
 
         fun chooseWav() {
             val dlg = FileDialog(null as Frame?, Strings.loadTitle, FileDialog.LOAD)
@@ -253,19 +292,214 @@ fun App() {
             dlg.isVisible = true
             val f = dlg.files.firstOrNull() ?: return
             wavFile = f
+            wavDurSec = wavDurationSec(f) // для таймера в покое (замечание «б» приёмки #44)
+            rec = null; recName = null; recSaved = false // явный выбор файла отменяет непосохранённую запись
+            WavPlayer.stop(); recPlaying = false // и её воспроизведение (п.1 приёмки #43)
             error = null
             lastWavDir = dlg.directory
             savePrefs()
         }
 
+        // Автоимя записи — присваивается в onRecClick при нажатии «Запись»
+        // и только если имя отсутствует (замечание 3 приёмки #43; после
+        // успешной записи не меняется). Маска: без «rec_», века и секунд,
+        // суффикс «_v2m» — «260909_1315_v2m.wav». Урок #42: буквы вне кавычек
+        // SimpleDateFormat читает как символы паттерна («illegal pattern
+        // character 'r'» — падение в #41): текстовые части — строго в
+        // кавычках литерала. Объявлена до onRecClick (локальные fun
+        // без forward-ссылок — ошибка компиляции, если вызвать раньше).
+        fun autoRecName(): String =
+            java.text.SimpleDateFormat("yyMMdd'_'HHmm'_v2m.wav'", Locale.ROOT).format(java.util.Date())
+
+        // Р14: клик по кнопке записи — фазы Idle → Countdown → Recording.
+        // Билд #41: debug-метки; страховка — если фаза Recording, а захват
+        // ещё не начался (capture == null), клик сбрасывает фазу в Idle
+        // (иначе она застревала в Recording навсегда).
+        fun onRecClick() {
+            when (recPhase) {
+                RecPhase.Idle -> {
+                    error = null; recPhase = RecPhase.Countdown; recCountdown = 3
+                    // Билд #44 (замечание 3а приёмки #43): имя — при нажатии
+                    // «Запись» и только если имя отсутствует (есть данные —
+                    // имя не менять; после успеха записи тоже не трогать).
+                    // Билд #45 (замечание «г»): поле стало изменяемым — стёртое
+                    // в нём имя (пустая строка) тоже заменяется автоименем.
+                    if (recName.isNullOrBlank()) recName = autoRecName()
+                    // Прослушка записи умолкает: её звук попал бы в микрофон
+                    WavPlayer.stop(); recPlaying = false
+                    Log.d("rec", "клик: Idle → Countdown (отсчёт 3)")
+                }
+                RecPhase.Countdown -> {
+                    recPhase = RecPhase.Idle
+                    Log.d("rec", "клик: Countdown → Idle (отмена отсчёта)")
+                }
+                RecPhase.Recording -> {
+                    val c = capture
+                    if (c == null) {
+                        recPhase = RecPhase.Idle
+                        Log.d("rec", "клик: стоп — захват ещё не начат, фаза → Idle")
+                    } else {
+                        c.stop()
+                        Log.d("rec", "клик: стоп — нативный стоп-флаг (read вернётся ≤150 мс)")
+                    }
+                }
+            }
+        }
+
+        fun saveRecording() {
+            val r = rec ?: return
+            val chooser = JFileChooser(lastWavDir ?: System.getProperty("user.home"))
+            chooser.dialogTitle = Strings.saveRecTitle
+            chooser.isAcceptAllFileFilterUsed = false
+            chooser.fileFilter = FileNameExtensionFilter(".wav", "wav")
+            // Билд #45: имя могло быть стёрто в поле (recName = "") — пустое
+            // имя не подставлять в диалог (File("") бессмысленен)
+            chooser.selectedFile = File(recName?.takeIf { it.isNotBlank() } ?: "rec.wav")
+            if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) return
+            var f = chooser.selectedFile
+            if (!f.name.lowercase(Locale.ROOT).endsWith(".wav")) f = File(f.parentFile, f.name + ".wav")
+            lastWavDir = f.parentFile?.path
+            try {
+                writeWavMono(f, r.pcm, r.sr)
+                recSaved = true
+                savePrefs()
+            } catch (e: Exception) {
+                error = e.message ?: e.toString()
+            }
+        }
+
+        // Р14: отсчёт 3..2..1 — отдельным эффектом от захвата (билд #41:
+        // в #40 смена recPhase на Recording ВНУТРИ эффекта записи
+        // перезапускала LaunchedEffect(recPhase) — Compose отменял корутину
+        // на ближайшей приостановке (withContext): захват не стартовал
+        // (полоса: уровень 0) либо фаза навсегда застревала в Recording
+        // (кнопка «стоп» не работала). Здесь фаза меняется последним
+        // действием; смена фазы нажатием отменяет отсчёт.
+        LaunchedEffect(recPhase) {
+            if (recPhase != RecPhase.Countdown) return@LaunchedEffect
+            Log.d("rec", "отсчёт: 3..2..1")
+            for (n in 3 downTo 1) {
+                recCountdown = n
+                delay(1000)
+                if (recPhase != RecPhase.Countdown) {
+                    Log.d("rec", "отсчёт: отменён")
+                    return@LaunchedEffect
+                }
+            }
+            Log.d("rec", "отсчёт: кончился — фаза → Recording (эффект захвата стартует)")
+            recPhase = RecPhase.Recording
+        }
+
+        // Р14: захват (до нажатия «стоп» или 60 с). Отдельный эффект: живёт
+        // всю запись, recPhase меняет только по завершении (finally) — ключ
+        // эффекта не меняется изнутри, отмены нет. При отмене эффекта извне
+        // (сброс фазы кликом) finally закрывает линию.
+        LaunchedEffect(recPhase) {
+            if (recPhase != RecPhase.Recording) return@LaunchedEffect
+            val mic = NativeCapture()
+            try {
+                val problem = withContext(Dispatchers.IO) { mic.open() }
+                if (problem != null) {
+                    Log.d("rec", "open не удался: $problem")
+                    error = Strings.recUnavailable + if (problem.isBlank()) "" else " ($problem)"
+                    return@LaunchedEffect
+                }
+                Log.d("rec", "open ok — старт record()")
+                capture = mic
+                val result = withContext(Dispatchers.IO) { mic.record(60_000L) }
+                if (result != null) {
+                    Log.d("rec", "запись готова: ${result.pcm.size} сэмплов ≈ " +
+                        "${result.pcm.size / result.sr} с")
+                    rec = result
+                    // Имя уже назначено при старте записи (замечание 3а
+                    // приёмки #43) — после успеха не меняется.
+                    recSaved = false
+                } else {
+                    Log.d("rec", "запись: данных нет (result == null)")
+                }
+            } finally {
+                if (capture === mic) capture = null
+                mic.stop() // любой исход (стоп/ошибка/отмена) — линия закрыта
+                if (recPhase == RecPhase.Recording) {
+                    recPhase = RecPhase.Idle
+                    Log.d("rec", "захват завершён — фаза → Idle")
+                }
+            }
+        }
+
+        // Таймер записи (билд #40): секунды записи вверх от 0:00 (текст —
+        // из recPhase/recCountdown/recElapsed); автостоп на 60-й секунде
+        // (лимит в record() остаётся страховкой). Запись стартует при
+        // показе «0:00» — сразу после отсчёта −0:03..−0:01.
+        LaunchedEffect(recPhase) {
+            if (recPhase != RecPhase.Recording) return@LaunchedEffect
+            recElapsed = 0
+            AudioLevel.mic = 0f // свежая запись — уровень с нуля
+            while (recPhase == RecPhase.Recording) {
+                delay(1000)
+                recElapsed++
+                if (recElapsed >= 60) capture?.stop()
+            }
+        }
+
+        // Позиция воспроизведения (п.5 приёмки #43): пока играет запись
+        // (WavPlayer) или версия (MidiPlayer) — публикует секунды от начала
+        // в playPosSec 10 раз/с; её читают семисегментный таймер (п.5а) и
+        // полоска канваса гистограммы (п.5б, NoteChart.playPosSec).
+        LaunchedEffect(recPlaying, playing) {
+            if (!recPlaying && !playing) {
+                playPosSec = -1f
+                return@LaunchedEffect
+            }
+            while (recPlaying || playing) {
+                playPosSec = (if (recPlaying) WavPlayer.positionSec else MidiPlayer.positionSec).toFloat()
+                delay(100)
+            }
+            playPosSec = -1f
+        }
+
+        // Полоса уровня (билд #40): сглаженный уровень источника — запись
+        // (RMS микрофона), воспроизведение записи (п.1 приёмки #43: RMS из
+        // WavPlayer — тоже AudioLevel.mic) или громкость нот MIDI; подъём
+        // быстрый, спад медленный (VU). По окончании — плавно гаснет.
+        // Debug-метка [meter] (билд #41): уровень раз в секунду — что именно
+        // видит полоса (для калибровки порогов и проверки источника).
+        LaunchedEffect(recPhase, playing, recPlaying) {
+            var disp = 0f
+            var lastLog = 0L
+            while (recPhase == RecPhase.Recording || playing || recPlaying || disp > 0.004f) {
+                val raw = if (recPhase == RecPhase.Recording || recPlaying) AudioLevel.mic else AudioLevel.midi
+                val k = if (raw > disp) 0.45f else 0.08f
+                disp += (raw - disp) * k
+                meterLevel = disp
+                val now = System.currentTimeMillis()
+                if (disp > 0.004f && now - lastLog >= 1000) {
+                    lastLog = now
+                    val src = when {
+                        recPhase == RecPhase.Recording -> "микрофон"
+                        recPlaying -> "запись (воспроизведение)"
+                        else -> "MIDI-ноты"
+                    }
+                    Log.d("meter", "полоса: ${"%.4f".format(Locale.ROOT, disp)} " +
+                        "(${"%.1f".format(Locale.ROOT, levelDb(disp))} dBFS), источник: $src")
+                }
+                delay(40)
+            }
+            meterLevel = 0f
+        }
+
         fun transcribe() {
-            val f = wavFile ?: return
+            // Вход (Р14): свежая запись с микрофона — в приоритете над файлом;
+            // ядро принимает PCM из памяти, файл не участвует.
+            val (pcm, sr) = rec?.let { it.pcm to it.sr }
+                ?: wavFile?.let { readWavMono(it) }
+                ?: return
+            val inputName = recName ?: wavFile?.name ?: return
             busy = true
             error = null
             params = params.copy(program = instrument - 1) // инструмент «Экспорта» — единый источник (в отчёт/JSON)
             scope.launch(Dispatchers.Default) {
                 try {
-                    val (pcm, sr) = readWavMono(f)
                     // «Вход» (замечание 8): повторный прогон с нейтральной
                     // мелодикой — результаты обработки ритмических параметров.
                     // При нейтральной мелодике прогон не нужен: Вход = Выход.
@@ -287,7 +521,7 @@ fun App() {
                     // Трек (имя файла без расширения) и автор (☰-меню) —
                     // метаданные «meta» сводки.
                     val bytes = V2mEngine.transcribe(pcm, sr, params,
-                        track = f.nameWithoutExtension,
+                        track = inputName.removeSuffix(".wav"),
                         author = author.ifBlank { null })
                     if (bytes == null) {
                         error = Strings.transcribeFailed
@@ -302,7 +536,7 @@ fun App() {
                             midi = bytes,
                             notes = song?.notes ?: emptyList(),
                             report = V2mEngine.lastReport(),
-                            wavName = f.name,
+                            wavName = inputName,
                             params = params,
                             midiIn = midiIn,
                             notesIn = notesIn,
@@ -325,6 +559,9 @@ fun App() {
         fun listen() {
             val v = versions.getOrNull(selected) ?: return
             error = null
+            // Взаимоисключение с ▶ записи (п.1 приёмки #43): версия и запись
+            // одновременно не звучат
+            WavPlayer.stop(); recPlaying = false
             val midi = exportMidi(v.midi, effectiveKey(v.report), v.muted)
             if (listenExternal) { // во внешней программе: открыть файл; остановить встроенный плеер, если звучит
                 MidiPlayer.stop()
@@ -338,6 +575,33 @@ fun App() {
             }
             val err = MidiPlayer.play(midi) { playing = false }
             if (err == null) playing = true else error = err
+        }
+
+        /** ▶ источника (п.1 приёмки #43; замечание «б» приёмки #44 — и для
+         *  внешнего wav): воспроизведение свежей записи (WavPlayer), а если
+         *  её нет — загруженного файла (чтение с диска синхронно, как в
+         *  transcribe: файлы источников малы). Повторное нажатие — стоп;
+         *  [listen] умолкает, чтобы версия и запись не звучали вместе. */
+        fun recListen() {
+            error = null
+            if (recPlaying) {
+                WavPlayer.stop()
+                return
+            }
+            val ps = rec?.let { it.pcm to it.sr }
+                ?: wavFile?.let { f ->
+                    try {
+                        readWavMono(f)
+                    } catch (e: Exception) {
+                        error = e.message ?: e.toString()
+                        return
+                    }
+                }
+                ?: return
+            MidiPlayer.stop() // версия не звучит поверх записи
+            playing = false
+            val err = WavPlayer.play(ps.first, ps.second) { recPlaying = false }
+            if (err == null) recPlaying = true else error = err
         }
 
         /** Play one of the bundled sound samples, transformed per the
@@ -505,9 +769,66 @@ fun App() {
                     Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = ::chooseWav, enabled = !busy) { Text(Strings.wavButton) }
-                    Text(wavFile?.name ?: Strings.noFile, style = MaterialTheme.typography.body2)
+                // Полоса уровня записи-воспроизведения (билд #40): 0.9 ширины
+                // над строкой входного файла (строка опущена вниз); заливка
+                // слева по уровню, цвет зоны (серый/салатовый/малиновый);
+                // в молчании невидима. Источники: запись — RMS микрофона,
+                // воспроизведение — громкость нот MIDI (см. Level.kt).
+                LevelBar(meterLevel, Modifier.fillMaxWidth(0.9f).align(Alignment.CenterHorizontally))
+
+                // Ряд записи (п.2 приёмки #43 — теперь первый): [● запись]
+                // [таймер] [▶ записи]; «Выбрать/имя/Сохранить» — вторым рядом
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RecButton(recPhase, recCountdown, ::onRecClick, enabled = !busy)
+                    // Таймер (билд #40): отсчёт −0:03..−0:01 до старта, при
+                    // записи 0:00..1:00 вверх; при воспроизведении (п.5а
+                    // приёмки #43) — позиция от начала (wav или midi);
+                    // в покое — длительность источника: записи, а без неё —
+                    // загруженного файла (замечание «б» приёмки #44)
+                    SevenSegDisplay(
+                        text = when {
+                            recPhase == RecPhase.Countdown -> "-0:0$recCountdown"
+                            recPhase == RecPhase.Recording -> recClock(recElapsed)
+                            recPlaying || playing -> recClock(playPosSec.coerceAtLeast(0f).toInt())
+                            else -> rec?.let { recClock(it.pcm.size / it.sr) }
+                                ?: wavDurSec?.let { recClock(it) } ?: "0:00"
+                        },
+                        lit = if (recPhase == RecPhase.Idle && !recPlaying && !playing) 0.3f else 1f)
+                    // ▶ источника (п.1 приёмки #43): справа от таймера; играет
+                    // запись, а без неё — загруженный файл (замечание «б»
+                    // приёмки #44); повторное нажатие — стоп (иконка ▢)
+                    val recPlayIcon = if (recPlaying) Res.drawable.stop else Res.drawable.play
+                    OutlinedButton(onClick = ::recListen,
+                        enabled = (rec != null || wavFile != null) && !busy && recPhase == RecPhase.Idle,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                        modifier = Modifier.semantics {
+                            contentDescription =
+                                if (recPlaying) Strings.recStopListenCd else Strings.recListenCd
+                        }) {
+                        Icon(painterResource(recPlayIcon), contentDescription = null, modifier = Modifier.size(16.dp))
+                    }
+                }
+                // Ряд файла (п.2 приёмки #43 — второй): [Выбрать WAV] имя [Сохранить].
+                // Имя — InlineField в стиле полей пресета/затакта (замечание «1»
+                // приёмки #45; раньше был TextField — рамка вокруг поля): показ
+                // имени выбранного файла — пока имя не задано записью (recName);
+                // правка пишет recName (для [Сохранить] и транскрипта)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = ::chooseWav, enabled = !busy && recPhase == RecPhase.Idle) {
+                        Text(Strings.wavButton)
+                    }
+                    // TextField → InlineField (билд #46): placeholder показывает
+                    // «нет файла», но пустую строку не навязывает — как у затакта
+                    InlineField(value = recName ?: wavFile?.name ?: "",
+                        onValueChange = { recName = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = Strings.noFile)
+                    Button(onClick = ::saveRecording,
+                        enabled = rec != null && !recSaved && !busy && recPhase == RecPhase.Idle) {
+                        Text(Strings.saveLabel)
+                    }
                 }
 
                 // Пресеты (замечание 2): метка + [Открыть] (выпадающий список
@@ -534,7 +855,7 @@ fun App() {
                     }
                     InlineField(value = presetNameText, onValueChange = { presetNameText = it },
                         modifier = Modifier.weight(1f).widthIn(min = 80.dp))
-                    TextButton(onClick = ::savePreset) { Text(Strings.presetSave, style = MaterialTheme.typography.body2) }
+                    TextButton(onClick = ::savePreset) { Text(Strings.saveLabel, style = MaterialTheme.typography.body2) }
                 }
 
                 // 1. Ритмика — длительность, атака, темп (свёртываемый).
@@ -681,7 +1002,13 @@ fun App() {
                 Collapsible(Strings.secNotes, defaultOpen = true) {
                     val v = current
                     if (v != null) {
-                        val song = runCatching { parseMidiSong(v.midi) }.getOrNull()
+                        // ABC-таблица строится по отфильтрованному midi (билд #46,
+                        // фильтр питч-диапазона): ноты вне границ отсутствуют и
+                        // здесь, как и в экспорте; заглушенные «×» остаются
+                        // (muted не передаётся — их строки показывает вкладка)
+                        val song = runCatching {
+                            parseMidiSong(normalizeMidi(v.midi, pitchRange = pitchLo..pitchHi))
+                        }.getOrNull()
                         if (song != null) {
                             // Вкладки: высоту Compose рассчитывает по контенту
                             // (жёсткая 34dp — причина «мешания», замечание А.М.
@@ -709,13 +1036,17 @@ fun App() {
                                         } else {
                                             // Разметка «Вход» — по автоподбору отчёта своего прогона
                                             NoteChart(notes, parseKeyFromReport(v.reportForInput), tScale,
+                                                playPosSec = playPosSec, // п.5б: полоска позиции
                                                 onNoteClick = { n -> playNoteTone(n.pitch, n.velocity, n.cents) })
                                         }
                                     }
                                     // «Тоны» — гистограмма выхода (мелодика) с панелью
-                                    // правки под ней (п.4): клик выделяет ноту рамкой
+                                    // правки под ней (п.4): клик выделяет ноту рамкой.
+                                    // Фильтр питч-диапазона (билд #46): ноты вне границ
+                                    // скрыты — не видны, не звучат и не правятся
+                                    // (панель: «нет выделения»); «Кванты» не фильтруются
                                     1 -> {
-                                        val notes = v.notes
+                                        val notes = v.notes.filter { it.pitch in pitchLo..pitchHi }
                                         if (notes.isEmpty()) {
                                             Text(Strings.noResults)
                                         } else {
@@ -725,6 +1056,7 @@ fun App() {
                                             NoteChart(notes, key, tScale,
                                                 mutedKeys = v.muted,
                                                 selectedKey = selectedKey,
+                                                playPosSec = playPosSec, // п.5б: полоска позиции
                                                 onNoteClick = { n ->
                                                     // Выделение — по клику; заглушенная нота
                                                     // не звучит (возврат звука — повторным [X])
@@ -978,7 +1310,11 @@ fun App() {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Button(onClick = ::transcribe, enabled = !busy && wavFile != null) {
+                // [Транскрипт]: источник — загруженный wav или свежая запись
+                // (замечание 4 приёмки #43: после записи кнопка была недоступна —
+                // enabled учитывал только wavFile).
+                Button(onClick = ::transcribe,
+                    enabled = !busy && (wavFile != null || rec != null)) {
                     if (busy) {
                         CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
@@ -1076,6 +1412,25 @@ fun App() {
                                 style = MaterialTheme.typography.body2)
                             Slider(tScale, { tScale = it }, valueRange = 1f..10f,
                                 modifier = Modifier.fillMaxWidth())
+                        }
+                        // Диапазон нот (билд #46, замечание «б» приёмки #45):
+                        // движки ограничивают появление нот вне границ —
+                        // «Тоны»/ABC/экспорт (см. Strings.chartRangeHint);
+                        // границы — полутоны MIDI, подпись в нотах (A0..C8)
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
+                            Text(String.format(Locale.ROOT, Strings.chartRange,
+                                    pitchName(pitchLo), pitchName(pitchHi)),
+                                style = MaterialTheme.typography.body2)
+                            RangeSlider(
+                                value = pitchLo.toFloat()..pitchHi.toFloat(),
+                                onValueChange = { r ->
+                                    pitchLo = r.start.roundToInt()
+                                    pitchHi = r.endInclusive.roundToInt()
+                                },
+                                valueRange = PITCH_LO_DEFAULT.toFloat()..PITCH_HI_DEFAULT.toFloat(),
+                                modifier = Modifier.fillMaxWidth())
+                            Text(Strings.chartRangeHint, style = MaterialTheme.typography.body2,
+                                color = MaterialTheme.colors.onSurface.copy(alpha = 0.6f))
                         }
                         Divider()
                         // «Файл признаков» (билд #38): имя автора — в «meta»
@@ -1397,9 +1752,15 @@ private fun MenuCheck(label: String, checked: Boolean, onClick: () -> Unit) {
 /** Compact inline field: no box, just an underline — keeps rows with several
  *  editable values visually light (final tempo/time signature). The text
  *  color is set explicitly: BasicTextField's default is black, invisible on
- *  the dark theme (замечание 9). */
+ *  the dark theme (замечание 9). [placeholder] (билд #46) — серая подсказка
+ *  при пустом значении (у ряда файла: «нет файла»). */
 @Composable
-private fun InlineField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun InlineField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String? = null,
+) {
     BasicTextField(
         value = value,
         onValueChange = onValueChange,
@@ -1412,6 +1773,14 @@ private fun InlineField(value: String, onValueChange: (String) -> Unit, modifier
         singleLine = true,
         textStyle = MaterialTheme.typography.body2.copy(color = MaterialTheme.colors.onBackground),
         cursorBrush = SolidColor(MaterialTheme.colors.onBackground),
+        decorationBox = { inner ->
+            if (value.isEmpty() && placeholder != null) {
+                Box {
+                    Text(placeholder, style = MaterialTheme.typography.body2, color = Color.Gray)
+                    inner()
+                }
+            } else inner()
+        },
     )
 }
 
@@ -1450,3 +1819,104 @@ private fun EditNotePanel(
         }
     }
 }
+
+/** Фазы кнопки записи (Р14): Idle → Countdown → Recording (клик в обратную). */
+enum class RecPhase { Idle, Countdown, Recording }
+
+/** Кнопка записи Р14: красный кружок. Отсчёт −0:03..0:00 — в поле таймера
+ *  справа (билд #40; клик во время отсчёта отменяет старт); при записи
+ *  кружок мигает (клик — стоп). */
+@Composable
+private fun RecButton(phase: RecPhase, countdown: Int, onClick: () -> Unit, enabled: Boolean) {
+    val blink = rememberInfiniteTransition()
+        .animateFloat(1f, 0.25f, infiniteRepeatable(tween(400), RepeatMode.Reverse))
+    val cd = when (phase) {
+        RecPhase.Idle -> Strings.recCd
+        RecPhase.Countdown -> Strings.recCountdownCd.format(countdown)
+        RecPhase.Recording -> Strings.recStopCd
+    }
+    Button(onClick = onClick, enabled = enabled,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+        modifier = Modifier.semantics { contentDescription = cd }) {
+        Box(Modifier.size(18.dp)
+            .graphicsLayer { alpha = if (phase == RecPhase.Recording) blink.value else 1f }
+            .background(Color(0xFFE53935), CircleShape))
+    }
+}
+
+/** Поле таймера записи (билд #40): семисегментные цифры, формат «m:ss»,
+ *  отрицательное время — с минусом («-0:03»). lit — яркость сегментов:
+ *  1 = активно (отсчёт/запись), 0.3 = «покой» (длительность записи тускло). */
+@Composable
+private fun SevenSegDisplay(text: String, lit: Float, modifier: Modifier = Modifier) {
+    val bg = Color(0xFF14171B)
+    Box(modifier.width(76.dp).height(32.dp)
+        .background(bg, RoundedCornerShape(4.dp)),
+        contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 4.dp)) {
+            val hh = size.height
+            val t = hh * 0.16f
+            val cw = hh * 0.62f
+            val contentW = 4.05f * cw // знак + минуты + «:» + секунды (2)
+            val x0 = (size.width - contentW) / 2f
+            val col = Color(0xFFE53935).copy(alpha = lit)
+            val y0 = t / 2f
+            val y1 = hh - t / 2f
+            val ym = hh / 2f
+            fun seg(line: (x1: Float, y1: Float, x2: Float, y2: Float) -> Unit, s: Char, ax: Float, bx: Float) = when (s) {
+                'a' -> line(ax, y0, bx, y0); 'b' -> line(bx, y0, bx, ym)
+                'c' -> line(bx, ym, bx, y1); 'd' -> line(ax, y1, bx, y1)
+                'e' -> line(ax, ym, ax, y1); 'f' -> line(ax, y0, ax, ym)
+                else -> line(ax, ym, bx, ym) // g
+            }
+            fun digit(d: Char, cx: Float) {
+                val m = SEG7[d] ?: return
+                val ax = cx + 0.18f * cw
+                val bx = cx + 0.82f * cw
+                for (s in m) seg({ a, b, c, d2 -> drawLine(col, Offset(a, b), Offset(c, d2),
+                    strokeWidth = t, cap = StrokeCap.Round) }, s, ax, bx)
+            }
+            var rest = text
+            if (rest.startsWith("-")) {
+                // минус — в знаковой ячейке слева (место резервируется всегда,
+                // цифры не прыгают при смене знака)
+                val cx = x0
+                drawLine(col, Offset(cx + 0.08f * cw, ym), Offset(cx + 0.47f * cw, ym),
+                    strokeWidth = t, cap = StrokeCap.Round)
+                rest = rest.substring(1)
+            }
+            if (rest.isNotEmpty()) digit(rest[0], x0 + 0.55f * cw) // минуты
+            if (rest.length >= 2 && rest[1] == ':') {
+                val xc = x0 + 1.55f * cw + 0.25f * cw
+                drawCircle(col, t * 0.55f, Offset(xc, hh * 0.36f))
+                drawCircle(col, t * 0.55f, Offset(xc, hh * 0.64f))
+            }
+            if (rest.length >= 3) digit(rest[2], x0 + 2.05f * cw) // секунды
+            if (rest.length >= 4) digit(rest[3], x0 + 3.05f * cw)
+        }
+    }
+}
+
+/** Полоса уровня (билд #40): заливка слева по уровню (meterFill), цвет — по
+ *  зоне (meterZoneColor); «молчание» (нет зоны) — полоса невидима, место
+ *  резервируется всегда (макет не прыгает). Ширину задаёт вызывающий. */
+@Composable
+private fun LevelBar(level: Float, modifier: Modifier = Modifier) {
+    val zone = meterZoneColor(level)
+    Box(modifier.height(12.dp), contentAlignment = Alignment.CenterStart) {
+        if (zone != null) {
+            Box(Modifier.fillMaxHeight()
+                .fillMaxWidth(meterFill(level))
+                .background(zone, RoundedCornerShape(6.dp)))
+        }
+    }
+}
+
+/** Секунды → «m:ss» (0:00..1:00 — таймер записи, билд #40). */
+private fun recClock(sec: Int): String = "%d:%02d".format(sec / 60, sec % 60)
+
+/** Маска сегментов семисегментных цифр (SevenSegDisplay, билд #40). */
+private val SEG7 = mapOf(
+    '0' to "abcdef", '1' to "bc", '2' to "abged", '3' to "abgcd", '4' to "fgbc",
+    '5' to "afgcd", '6' to "afgedc", '7' to "abc", '8' to "abcdefg", '9' to "abcdfg",
+)

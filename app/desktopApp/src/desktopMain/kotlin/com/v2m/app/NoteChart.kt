@@ -59,7 +59,12 @@ import kotlin.math.roundToInt
  *  [mutedKeys] — заглушенные ноты: не звучат, на гистограмме — полоска-
  *  «рамка вокруг нуля» (длительность 0), клик в ±[MUTED_HIT_PX] px от
  *  полоски тоже попадает в ноту — чтобы [X] можно было вернуть.
- *  [selectedKey] — выделенная нота (постоянная рамка, А.М., п.4). */
+ *  [selectedKey] — выделенная нота (постоянная рамка, А.М., п.4).
+ *  [playPosSec] — позиция воспроизведения, секунды от начала (п.5б
+ *  приёмки #43): ≥ 0 — горизонтальная полоска на y = t, канвас
+ *  автоскроллится за ней (счёт — общий семисегментный индикатор над
+ *  канвасом, замечание «а» приёмки #44: цифры у полоски убраны);
+ *  -1 = ничего не играет. */
 @Composable
 fun NoteChart(
     notes: List<MidiNote>,
@@ -67,6 +72,7 @@ fun NoteChart(
     tScale: Float,
     mutedKeys: Set<Long> = emptySet(),
     selectedKey: Long? = null,
+    playPosSec: Float = -1f,
     onNoteClick: ((MidiNote) -> Unit)? = null,
 ) {
     // (билд #35) радиус клика вокруг полоски заглушенной ноты (в px)
@@ -102,6 +108,24 @@ fun NoteChart(
             delay(200)
             played = null
         }
+    }
+
+    // Автоскролл за полоской позиции (п.5б приёмки #43): пока идёт
+    // воспроизведение, полоска не уходит из окна — когда она ближе 12 dp
+    // к краю, окно догоняет её (полоска остаётся у края; ручной скролл
+    // внутри окна не перебивается).
+    val viewPx = with(density) { viewHeight.toPx() }
+    LaunchedEffect(playPosSec) {
+        if (playPosSec < 0f || playPosSec.toDouble() > effDur) return@LaunchedEffect
+        val y = playPosSec * pxPerSec
+        val s = scrollState.value
+        val edge = with(density) { 12.dp.toPx() }
+        val target = when {
+            y < s + edge -> (y - edge).coerceAtLeast(0f)
+            y > s + viewPx - edge -> (y - viewPx + edge).coerceAtLeast(0f)
+            else -> return@LaunchedEffect
+        }
+        scrollState.scrollTo(target.roundToInt())
     }
 
     // Scale degrees of the key: I tonic (bold, thicker line), IV subdominant
@@ -268,6 +292,14 @@ fun NoteChart(
                     val y1 = max((n.endSec * scaleY).toFloat(), y0 + if (muted) muteH else minH)
                     val xRight = slot * (n.pitch + n.cents / 100f - lowPitch)
                     drawRect(accent, Offset(0f, y0), Size(xRight, y1 - y0), style = Stroke(width = 2.dp.toPx()))
+                }
+                // Полоска позиции воспроизведения (п.5б приёмки #43): запись
+                // или версия играют — горизонтальная линия на y = t·scaleY
+                // (время вниз) во всю ширину. Счёт показывает общий
+                // семисегментный индикатор (замечание «а» приёмки #44).
+                if (playPosSec >= 0f && playPosSec.toDouble() <= effDur) {
+                    val y = playPosSec * scaleY
+                    drawRect(accent, Offset(0f, y - 0.75f), Size(size.width, 1.5f))
                 }
             }
         }

@@ -56,11 +56,14 @@ fun buildParamsJson(wavName: String, p: V2mEngine.Params, report: String, key: K
  *
  *  [muted] (билд #35) — заглушенные ноты как noteKeyOf(startTick, pitch):
  *  их Note-on'ы выбрасываются, а следующие Note-off'ы отпадают сами как
- *  stray-релизы (нота не начиналась). Тики отсчитываются от начала трека —
- *  ограничение общее для формата 1: muted-ключи построены парсером, для
- *  многотрековых файлов с нотами не в первом треке возможны расхождения
- *  (!ai; v2m-файлы практически однотрековые). */
-fun normalizeMidi(midi: ByteArray, muted: Set<Long> = emptySet()): ByteArray {
+ *  stray-релизы (нота не начиналась). [pitchRange] (билд #46) — фильтр
+ *  «диапазон нот» ☰-меню: Note-on'ы вне диапазона выбрасываются так же
+ *  (их релизы отпадают как stray); null = не фильтровать. Тики
+ *  отсчитываются от начала трека — ограничение общее для формата 1:
+ *  muted-ключи построены парсером, для многотрековых файлов с нотами не
+ *  в первом треке возможны расхождения (!ai; v2m-файлы практически
+ *  однотрековые). */
+fun normalizeMidi(midi: ByteArray, muted: Set<Long> = emptySet(), pitchRange: IntRange? = null): ByteArray {
     if (midi.size < 14 || midi[0] != 'M'.code.toByte() || midi[1] != 'T'.code.toByte() ||
         midi[2] != 'h'.code.toByte() || midi[3] != 'd'.code.toByte()) return midi
     val hlen = ((midi[4].toInt() and 0xFF) shl 24) or ((midi[5].toInt() and 0xFF) shl 16) or
@@ -113,8 +116,10 @@ fun normalizeMidi(midi: ByteArray, muted: Set<Long> = emptySet()): ByteArray {
                     val vel = midi[p + 1].toInt() and 0xFF
                     val key = (chan shl 8) or note
                     if (type == 0x90 && vel > 0) {
-                        // repeated attack, or a muted note (started at this tick & pitch)
-                        drop = !active.add(key) || noteKeyOf(tick, note) in muted
+                        // repeated attack, a muted note (started at this tick
+                        // & pitch), or a note outside the pitch filter
+                        drop = !active.add(key) || noteKeyOf(tick, note) in muted ||
+                            pitchRange != null && note !in pitchRange
                     } else drop = !active.remove(key) // stray release
                     p += 2
                 }
