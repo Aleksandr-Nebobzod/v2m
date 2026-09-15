@@ -5,13 +5,14 @@ import androidx.compose.ui.window.application
 import com.v2m.app.resources.Res
 import java.io.File
 import java.util.Locale
+import javax.sound.midi.MidiSystem
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 
 /** Номер билда = номер записи в docs/history.md, описывающей этот билд
  *  (записи идут подзаголовками с датой/временем, см. «Ход работ»).
  *  internal — показывается в «О программе» (App.kt). */
-internal const val BUILD = 46
+internal const val BUILD = 55
 
 fun main(args: Array<String>) {
     if (args.firstOrNull() == "--self-test") {
@@ -75,17 +76,209 @@ private fun selfTest() {
     // defaults (no program — the instrument is a separate user choice).
     val tuned = def.copy(onsetThreshold = 0.33f, quantize = 2)
     val store = PresetStore(File(outDir, "presets-test.properties"))
-    store.save(Preset("мой тест", diffFromDefaults(tuned, 7, 9)))
+    store.save(Preset("мой тест", diffFromDefaults(tuned, 7, 9, 5)))
     val loaded = store.load("мой тест")
     check(loaded != null) { "store load after save" }
     check(presetParams(loaded!!, def.program) == tuned) { "diff round-trip: $loaded" }
-    check(presetKeySel(loaded) == 7 && presetSmoothing(loaded) == 9) { "preset keySel/smoothing: $loaded" }
+    check(presetKeySel(loaded) == 7 && presetSmoothing(loaded) == 9 && presetPitchMedian(loaded) == 5) {
+        "preset keySel/smoothing/pitchMedian: $loaded" }
     check("program" !in loaded.diffs && "onsetThreshold" in loaded.diffs && "tempoBpm" !in loaded.diffs) { "diff keys: ${loaded.diffs}" }
     // A name is unique: saving over an existing name replaces the entry.
     store.save(Preset("мой тест", emptyMap()))
     check(store.list().size == 1 && store.load("мой тест")?.diffs?.isEmpty() == true) { "store upsert: ${store.list()}" }
     check(store.load("нет такого") == null) { "store miss must be null" }
     println("SELF-TEST: presets: " + FACTORY_PRESETS.joinToString { it.name } + " + store ok")
+
+    // Билд #47: проба JNI-слоя спектрограммы (вкладка «Спектр»). Тем же
+    // кодом, что рисует вкладка, сохраняется PNG — проверка палитры и
+    // ориентации осей без GUI (время вертикально, частота горизонтально).
+    val spec = try {
+        V2mEngine.spectrogram(pcm, sr)
+    } catch (e: UnsatisfiedLinkError) {
+        throw IllegalStateException(
+            "libv2m.so устарела: пересоберите basicpitch/src/libv2m (JNI спектрограммы отсутствует)", e)
+    } ?: error("spectrogram failed")
+    val specMax = (0 until spec.frames).maxOf { f -> (0 until spec.bands).maxOf { b -> spec[f, b] } }
+    val specNonZero = (0 until spec.frames).sumOf { f -> (0 until spec.bands).count { b -> spec[f, b] > 0 } }
+    val specBmp = spectrogramBitmap(spec, gammaPalette(Gamma.DEFAULT)) ?: error("spectrogram bitmap failed")
+    val specPng = File(outDir, "spectrogram.png")
+    org.jetbrains.skia.Image.makeFromBitmap(specBmp)
+        .encodeToData(org.jetbrains.skia.EncodedImageFormat.PNG)?.let { specPng.writeBytes(it.bytes) }
+    println("SELF-TEST: spectrogram ${spec.frames}x${spec.bands} max=$specMax nonzero=$specNonZero -> ${specPng.name}")
+    check(spec.frames > 0 && spec.bands == 120) { "spectrogram shape: ${spec.frames}x${spec.bands}" }
+    check(specMax > 0 && specNonZero > spec.frames * spec.bands / 20) { "spectrogram empty: max=$specMax nonzero=$specNonZero" }
+
+    // Билд #50: «Обработка» (gate, НЧ/ВЧ-срезы, компрессор-экспандер) —
+    // аудиоэффекты до модели (v2m_process_audio). Пробы: при выключенных
+    // ручках материал не меняется вовсе (та же спектрограмма, что у RAW),
+    // срезы двигают ZCR в ожидаемую сторону, gate понижает энергию,
+    // компрессор её повышает, экспандер — понижает
+    fun process(p: V2mEngine.Params): FloatArray = try {
+        V2mEngine.processAudio(pcm, sr, p)
+    } catch (e: UnsatisfiedLinkError) {
+        throw IllegalStateException(
+            "libv2m.so устарела: пересоберите basicpitch/src/libv2m (nativeProcessAudio)", e)
+    } ?: error("processAudio failed")
+
+    fun rms(x: FloatArray): Double = kotlin.math.sqrt(x.fold(0.0) { a, v -> a + v * v } / x.size)
+    fun zcr(x: FloatArray): Double =
+        x.indices.drop(1).count { (x[it] < 0f) != (x[it - 1] < 0f) }.toDouble() / x.size
+    // Уровни блоков по 2048 сэмплов, дБ, по возрастанию: «пол» — 5-й
+    // процентиль, «потолок» — 95-й. У шумоподавителя пол и должен падать
+    // (RMS материала почти не меняется: тихие участки дают малую долю
+    // энергии); у компрессора (билд #52) пол растёт, а потолок — нет.
+    fun blockDb(x: FloatArray): List<Double> {
+        val blk = 2048
+        val n = x.size / blk
+        return (0 until n).map { i ->
+            var s = 0.0
+            for (j in i * blk until (i + 1) * blk) s += x[j].toDouble() * x[j]
+            10.0 * kotlin.math.log10(s / blk + 1e-12)
+        }.sorted()
+    }
+    fun floorDb(x: FloatArray): Double {
+        val db = blockDb(x)
+        return db[(db.size * 5 / 100).coerceIn(0, db.size - 1)]
+    }
+    fun loudDb(x: FloatArray): Double {
+        val db = blockDb(x)
+        return db[(db.size * 95 / 100).coerceIn(0, db.size - 1)]
+    }
+
+    val base = process(def)
+    val baseSpec = V2mEngine.spectrogram(base, V2mEngine.SAMPLE_RATE) ?: error("spectrogram(base) failed")
+    check(baseSpec.data.contentEquals(spec.data)) { "выключенные эффекты изменили материал" }
+    val lowCut = process(def.copy(lowCutHz = 500f))
+    val highCut = process(def.copy(highCutHz = 1000f))
+    // Порог gate для пробы выбран по материалу: у test4.wav пиковая
+    // огибающая почти всё время у −0.2 dBFS (тихие участки до −30 dBFS),
+    // поэтому −20 дБ глушит ~13 % времени, а −30 дБ — уже ничего
+    val gated = process(def.copy(gateDb = -20f))
+    val comp = process(def.copy(expComp = -80f))
+    val exp = process(def.copy(expComp = 80f))
+    println("SELF-TEST: audio fx rms ${"%.4f".format(Locale.ROOT, rms(base))} -> gate " +
+        "${"%.4f".format(Locale.ROOT, rms(gated))}, comp ${"%.4f".format(Locale.ROOT, rms(comp))}, " +
+        "exp ${"%.4f".format(Locale.ROOT, rms(exp))}; пол ${"%.1f".format(Locale.ROOT, floorDb(base))} " +
+        "-> gate ${"%.1f".format(Locale.ROOT, floorDb(gated))}, компрессор " +
+        "${"%.1f".format(Locale.ROOT, floorDb(comp))}, экспандер " +
+        "${"%.1f".format(Locale.ROOT, floorDb(exp))} дБ; потолок " +
+        "${"%.1f".format(Locale.ROOT, loudDb(base))} -> компрессор " +
+        "${"%.1f".format(Locale.ROOT, loudDb(comp))} дБ; zcr " +
+        "${"%.4f".format(Locale.ROOT, zcr(base))} -> НЧ ${"%.4f".format(Locale.ROOT, zcr(lowCut))}, " +
+        "ВЧ ${"%.4f".format(Locale.ROOT, zcr(highCut))}")
+    check(zcr(lowCut) > zcr(base) * 1.05) { "НЧ-срез не поднял ZCR: ${zcr(base)} -> ${zcr(lowCut)}" }
+    check(zcr(highCut) < zcr(base) * 0.95) { "ВЧ-срез не понизил ZCR: ${zcr(base)} -> ${zcr(highCut)}" }
+    check(floorDb(gated) < floorDb(base) - 6.0) {
+        "gate не задавил пол: ${floorDb(base)} -> ${floorDb(gated)} дБ" }
+    // Билд #52 (п.1 приёмки #51: «тихие стали средними, громкие стали
+    // средними»): компрессор не поднимает материал целиком (RMS почти
+    // стоит), а сближает уровни — «пол» растёт, «потолок» не растёт
+    check(floorDb(comp) > floorDb(base) + 6.0) {
+        "компрессор не поднял тихое: пол ${floorDb(base)} -> ${floorDb(comp)} дБ" }
+    check(loudDb(comp) <= loudDb(base) + 3.0) {
+        "компрессор поднял громкое: потолок ${loudDb(base)} -> ${loudDb(comp)} дБ" }
+    // Экспандер работает ниже порога (опорный уровень − 12 дБ): на этом
+    // материале он опускает именно тихие участки («пол»), а RMS — на доли
+    // процента (тихие участки дают малую долю энергии)
+    check(floorDb(exp) < floorDb(base) - 6.0) {
+        "экспандер не понизил пол: ${floorDb(base)} -> ${floorDb(exp)} дБ" }
+    // Билд #51 (п.1 приёмки #50): сила удвоена (отношение 1..7 вместо 1..4) —
+    // проверяется по монотонности шкалы: половинная ручка слабее полной
+    val comp40 = process(def.copy(expComp = -40f))
+    val exp40 = process(def.copy(expComp = 40f))
+    println("SELF-TEST: шкала динамики 40% → 80%: rms comp " +
+        "${"%.4f".format(Locale.ROOT, rms(comp40))} → ${"%.4f".format(Locale.ROOT, rms(comp))}, " +
+        "пол exp ${"%.1f".format(Locale.ROOT, floorDb(exp40))} → " +
+        "${"%.1f".format(Locale.ROOT, floorDb(exp))} дБ")
+    check(rms(comp) > rms(comp40)) { "компрессор: 80% слабее 40%" }
+    check(floorDb(exp) < floorDb(exp40)) { "экспандер: 80% слабее 40%" }
+
+    // PNG обработанной спектрограммы (вкладка «Спектр» после «Транскрипт»):
+    // все ручки включены — картинку видно рядом с RAW-снимком
+    val fxSpec = V2mEngine.spectrogram(
+        process(def.copy(lowCutHz = 200f, highCutHz = 4000f, gateDb = -40f, expComp = 40f)),
+        V2mEngine.SAMPLE_RATE) ?: error("spectrogram(fx) failed")
+    val fxBmp = spectrogramBitmap(fxSpec, gammaPalette(Gamma.DEFAULT)) ?: error("fx bitmap failed")
+    val fxPng = File(outDir, "spectrogram-fx.png")
+    org.jetbrains.skia.Image.makeFromBitmap(fxBmp)
+        .encodeToData(org.jetbrains.skia.EncodedImageFormat.PNG)?.let { fxPng.writeBytes(it.bytes) }
+    println("SELF-TEST: спектрограмма с эффектами ${fxSpec.frames}x${fxSpec.bands} -> ${fxPng.name}")
+
+    // Билд #49: гаммы спектрограммы (п.1 приёмки #48) — 4 палитры по 256
+    // цветов, попарно различны; инверсия (дневная тема, п.2) — точное
+    // дополнение по каналам, альфа сохраняется
+    val gammas = Gamma.values()
+    for (g in gammas) {
+        val p = gammaPalette(g)
+        val inv = gammaPalette(g, invert = true)
+        check(p.size == 256) { "gamma ${g.id}: size ${p.size}" }
+        check(p.indices.all { (p[it] and 0xFFFFFF) == ((inv[it] and 0xFFFFFF) xor 0xFFFFFF) }) {
+            "gamma ${g.id}: invert is not the exact complement"
+        }
+    }
+    check(gammas.map { gammaPalette(it).toList() }.distinct().size == gammas.size) { "gamma palettes not distinct" }
+    println("SELF-TEST: gammas ${gammas.joinToString { it.id }} ok")
+    // Билд #52 (п.4 приёмки #51): «Монохром» — нейтральная серая шкала
+    // (R = G = B на всей палитре, чёрный → белый); прежний id "inferno"
+    // из prefs ведёт на «Монохром», не на «Магму»
+    val mono = gammaPalette(Gamma.MONOCHROME)
+    val monoInv = gammaPalette(Gamma.MONOCHROME, invert = true)
+    fun rgb(c: Int) = Triple((c shr 16) and 0xFF, (c shr 8) and 0xFF, c and 0xFF)
+    check(mono.indices.all { val (r, g, b) = rgb(mono[it]); r == g && g == b }) {
+        "Монохром: шкала не нейтральная (R = G = B нарушено)" }
+    check(mono.last() and 0xFFFFFF == 0xFFFFFF && mono.first() and 0xFFFFFF == 0x000000) {
+        "Монохром: шкала не от чёрного к белому" }
+    check(monoInv.indices.all { val (r, g, b) = rgb(monoInv[it]); r == g && g == b }) {
+        "Монохром: инверсия не нейтральная" }
+    check(Gamma.byId("inferno") == Gamma.MONOCHROME) { "прежний id inferno не ведёт на «Монохром»" }
+    println("SELF-TEST: монохром нейтральный ${rgb(mono.first())}→${rgb(mono.last())}, " +
+        "legacy id inferno → ${Gamma.byId("inferno").id}")
+
+    // Билд #51 (п.2 приёмки #50): аттенюатор MIDI — шкала «% = CC7»,
+    // крайние значения поджимаются (в синтезатор не уходит > 127 или < 0)
+    check(MidiPlayer.volumeCcFor(100) == 100 && MidiPlayer.volumeCcFor(127) == 127) {
+        "MIDI volume: 100/127 % должны давать CC7 100/127" }
+    check(MidiPlayer.volumeCcFor(200) == 127 && MidiPlayer.volumeCcFor(-5) == 0) {
+        "MIDI volume: крайние значения не поджаты" }
+    check(String.format(Locale.ROOT, Strings.menuMidiVolume, 100) == "Громкость MIDI: 100 %") {
+        "метка громкости MIDI: неверный формат — " +
+            String.format(Locale.ROOT, Strings.menuMidiVolume, 100)
+    }
+    // Живой синтезатор: CC7 ставится всем каналам и читается назад (ноты не
+    // играются — контроль громкости без звука; нет синтезатора — не ошибка)
+    val volProbe = runCatching {
+        val s = MidiSystem.getSynthesizer()
+        s.open()
+        for (ch in s.channels) { ch?.controlChange(7, 0); ch?.controlChange(7, 127) }
+        val back = s.channels.mapNotNull { it?.getController(7) }.distinct()
+        s.close()
+        back
+    }
+    println("SELF-TEST: аттенюатор на синтезаторе: CC7 после 127 → " +
+        (volProbe.getOrNull()?.joinToString() ?: "нет синтезатора: ${volProbe.exceptionOrNull()?.message}"))
+    volProbe.getOrNull()?.let { check(it == listOf(127)) { "CC7 не применился ко всем каналам: $it" } }
+    println("SELF-TEST: громкость MIDI «" + String.format(Locale.ROOT, Strings.menuMidiVolume, 100) +
+        "», CC7 для 0/100/127/200 % = " +
+        "${MidiPlayer.volumeCcFor(0)}/${MidiPlayer.volumeCcFor(100)}/" +
+        "${MidiPlayer.volumeCcFor(127)}/${MidiPlayer.volumeCcFor(200)}")
+
+    // Билд #53 (п.1 приёмки #52): регистр громкости WAV 0..100 = 0..25 %
+    // усиления записи (WavPlayer.volume = регистр / WAV_VOLUME_DIVISOR)
+    check(String.format(Locale.ROOT, Strings.menuWavVolume, WAV_VOLUME_MAX) == "Громкость WAV: 100 %") {
+        "метка громкости WAV: неверный формат — " +
+            String.format(Locale.ROOT, Strings.menuWavVolume, WAV_VOLUME_MAX)
+    }
+    println("SELF-TEST: громкость WAV: регистр 0..$WAV_VOLUME_MAX → усиление 0.." +
+        "${WAV_VOLUME_MAX / WAV_VOLUME_DIVISOR} (100 = 25 %)")
+    // Миграция шкалы prefs: старая 0..200 (проценты усиления) → регистр
+    // (15 % усиления → 60; «как записано» 100 % → верх регистра), новая — как есть
+    check(wavVolumeFromStored(15, 1) == 60 && wavVolumeFromStored(100, 1) == WAV_VOLUME_MAX &&
+        wavVolumeFromStored(200, 1) == WAV_VOLUME_MAX && wavVolumeFromStored(60, 2) == 60) {
+        "миграция шкалы громкости WAV: 15/1 → ${wavVolumeFromStored(15, 1)}, " +
+            "100/1 → ${wavVolumeFromStored(100, 1)}, 60/2 → ${wavVolumeFromStored(60, 2)}"
+    }
+    println("SELF-TEST: миграция громкости WAV: 15 % (старая шкала) → регистр " +
+        "${wavVolumeFromStored(15, 1)} (усиление ${wavVolumeFromStored(15, 1) / WAV_VOLUME_DIVISOR})")
 
     val params = V2mEngine.Params.defaults().copy(harmonizeMerge = 1, modeSnap = 1f)
     val midi = V2mEngine.transcribe(pcm, sr, params)
@@ -123,6 +316,65 @@ private fun selfTest() {
     println("SELF-TEST KEY: ${key?.name} (${key?.alterationsText}) " +
             "| 57 = ${noteLabel(57, key)} | 55 = ${noteLabel(55, key)} | 59 = ${noteLabel(59, key)}")
     song.notes.forEach { println("  ${it.name}  %.2f-%.2f s".format(it.startSec, it.endSec)) }
+
+    // Сглаживание через JNI (билд #53, п.2 приёмки #52): окно должно доезжать
+    // до движка и менять результат — тот же материал с окном 15 даёт другие
+    // байты .mid, чем дефолтное окно (1 = выкл). Проба после снятия отчёта и
+    // сводки: они читаются из статики последнего прогона.
+    val midiSmooth = V2mEngine.transcribe(pcm, sr, params.copy(smoothingWindow = 15))
+        ?: error("transcribe (smoothing 15) failed")
+    check(!midiSmooth.contentEquals(midi)) {
+        "сглаживание не влияет на результат: окно 15 дало тот же .mid, что окно ${params.smoothingWindow}"
+    }
+    println("SELF-TEST: сглаживание через JNI: окно ${params.smoothingWindow} → ${midi.size} Б, " +
+        "окно 15 → ${midiSmooth.size} Б (байты различаются)")
+
+    // «Стабильность питча» через JNI (билд #55, Р19). Сравнения байтов здесь
+    // нет намеренно: на чистом материале фильтр может законно не тронуть ни
+    // одной ноты, «байты различаются» ничего не доказывало бы. Проверяется
+    // семантика присоединения: нот становится меньше ровно на число
+    // присоединённых, а звучащее время (объединение интервалов) не сокращается.
+    // Квантизация выключена: иначе пересборка сетки сдвигает все ноты и
+    // сравнивать интервалы нечего.
+    check(V2mEngine.paramsDefaultFieldCount() >= 24) {
+        "libv2m.so устарела: пересоберите basicpitch/src/libv2m (параметра pitch_median_window нет)"
+    }
+    check(params.pitchMedianWindow == 1) { "дефолт «Стабильности питча» — «выкл»: ${params.pitchMedianWindow}" }
+    val paramsQ = params.copy(quantize = 0)
+    val midiQ = V2mEngine.transcribe(pcm, sr, paramsQ) ?: error("transcribe (quantize off) failed")
+    val songQ = parseMidiSong(midiQ)
+    val midiStab = V2mEngine.transcribe(pcm, sr, paramsQ.copy(pitchMedianWindow = 7))
+        ?: error("transcribe (pitch median 7) failed")
+    val reportStab = V2mEngine.lastReport()
+    check("pitch median: window 7" in reportStab) {
+        "стабильность питча не доехала до движка: " + reportStab.take(200)
+    }
+    val attached = Regex("attached (\\d+) notes").find(reportStab)?.groupValues?.get(1)?.toInt()
+    check(attached != null) { "в отчёте нет строки о присоединении: " + reportStab.take(200) }
+    val songStab = parseMidiSong(midiStab)
+    check(songQ.notes.size - songStab.notes.size <= attached!!) {
+        "фильтр удалил ноты без присоединения: ${songQ.notes.size} → ${songStab.notes.size}, " +
+            "присоединено $attached"
+    }
+    check(soundingTicks(songStab) >= soundingTicks(songQ)) {
+        "присоединение потеряло звучание: ${soundingTicks(songQ)} → ${soundingTicks(songStab)} тиков"
+    }
+    println("SELF-TEST: стабильность питча через JNI: окно 1 → ${songQ.notes.size} нот " +
+        "(${soundingTicks(songQ)} тиков звучания), окно 7 → ${songStab.notes.size} нот " +
+        "(присоединено $attached, ${soundingTicks(songStab)} тиков)")
+
+    // Паспорт FF 7F (билд #54): сглаживание и стабильность питча — в
+    // параметрах blob'а (до #54 smoothingWindow был только строкой отчёта)
+    val blob = buildParamsJson("t.wav", params.copy(smoothingWindow = 3, pitchMedianWindow = 7), "", null)
+    check("\"smoothingWindow\":3" in blob && "\"pitchMedianWindow\":7" in blob) { "blob params: $blob" }
+
+    // Значения из prefs (билд #54): сохранённое «Сглаживание» 3 не
+    // мигрирует, мусор поджимается к нечётному в границах слайдера
+    check(smoothingFromStored(5) == 5 && smoothingFromStored(3) == 3) { "smoothingFromStored 5/3" }
+    check(smoothingFromStored(0) == 1 && smoothingFromStored(16) == 15) { "smoothingFromStored 0/16" }
+    check(pitchMedianFromStored(0) == 1 && pitchMedianFromStored(2) == 3 && pitchMedianFromStored(8) == 7) {
+        "pitchMedianFromStored 0/2/8" }
+    println("SELF-TEST: мелодика: сглаживание и стабильность питча — JNI, blob, prefs ok")
 
     // Display-format checks: length multipliers (L=1/8), note cell, beat mask
     check(abcLen(0.5) == "1") { "eighth: " + abcLen(0.5) }

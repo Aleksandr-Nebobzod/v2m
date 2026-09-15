@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -30,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
@@ -65,6 +67,8 @@ import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
 import java.io.ByteArrayOutputStream
 import java.io.File
+import kotlin.math.exp
+import kotlin.math.ln
 import kotlin.math.roundToInt
 
 /** One transcription result (added to the version list on each run).
@@ -85,6 +89,8 @@ data class Version(
     val reportIn: String? = null,
     val muted: Set<Long> = emptySet(),
     val framesJson: String? = null, // сводные кадровые признаки прогона (билд #38: всегда)
+    val spec: Spectrogram? = null, // спектрограмма входа: RAW (билд #47, вкладка «Спектр»)
+    val specOut: Spectrogram? = null, // обработанный материал прогона (билд #50): с эффектами «Обработки»
 ) {
     /** Ноты «Входа» для показа: прогон «Вход» либо (он не делался) финал. */
     val notesForInput: List<MidiNote> get() = notesIn ?: notes
@@ -95,13 +101,17 @@ data class Version(
  *  прогон «Вход» не нужен — он дал бы те же ноты, что финальный. */
 private fun melodyNeutral(p: V2mEngine.Params): Boolean =
     !p.useMelodiaTrick && !p.includePitchBends && p.harmonizeMerge == 0 &&
-        p.minBendBins == 0 && p.globalShift == 0f && p.modeSnap == 0f
+        p.minBendBins == 0 && p.globalShift == 0f && p.modeSnap == 0f &&
+        p.smoothingWindow <= 1 && p.pitchMedianWindow <= 1
 
 /** Те же параметры, но мелодика нейтральна: сдвиг/лад/слияние/колоратура
- *  выключены (не вмешиваться), мелодический проход и бенды отключены. */
+ *  выключены (не вмешиваться), мелодический проход и бенды отключены,
+ *  сглаживание и стабильность питча — «выкл» (билд #54: фильтры меняют
+ *  состав/границы нот, «Вход» обязан их нейтрализовать). */
 private fun neutralMelody(p: V2mEngine.Params): V2mEngine.Params = p.copy(
     useMelodiaTrick = false, includePitchBends = false, harmonizeMerge = 0,
-    minBendBins = 0, globalShift = 0f, modeSnap = 0f,
+    minBendBins = 0, globalShift = 0f, modeSnap = 0f, smoothingWindow = 1,
+    pitchMedianWindow = 1,
 )
 
 /** Long-press help: English name (bold), purpose (plain), examples (italic). */
@@ -133,11 +143,19 @@ private fun ParamLabel(text: String, helpKey: String) {
     }
 }
 
+/** Секция панели со сворачиванием. Состояние — снаружи (App.kt хранит его
+ *  в prefs, билд #52 п.6 приёмки #51: «развёрнутость секций тоже следует в
+ *  preferences сохранять»), поэтому [open]/[onOpenChange] — параметры, а не
+ *  внутренняя память. */
 @Composable
-private fun Collapsible(title: String, defaultOpen: Boolean = false, content: @Composable () -> Unit) {
-    var open by remember { mutableStateOf(defaultOpen) }
+private fun Collapsible(
+    title: String,
+    open: Boolean,
+    onOpenChange: (Boolean) -> Unit,
+    content: @Composable () -> Unit,
+) {
     Column {
-        TextButton(onClick = { open = !open }, contentPadding = PaddingValues(0.dp)) {
+        TextButton(onClick = { onOpenChange(!open) }, contentPadding = PaddingValues(0.dp)) {
             Text((if (open) "▾ " else "▸ ") + title, style = MaterialTheme.typography.subtitle1)
         }
         AnimatedVisibility(open) { content() }
@@ -168,11 +186,23 @@ fun App() {
         var busy by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf<String?>(null) }
         var keySel by remember { mutableStateOf(prefs.keySel) } // 0 = авто, 1..24 (см. Key.kt)
-        var smoothingWindow by remember { mutableStateOf(prefs.smoothingWindow) } // нечётное 3..15; UI-стаб
+        var smoothingWindow by remember { mutableStateOf(prefs.smoothingWindow) } // нечётное 1..15 (1 = выкл); в движок — в transcribe()
+        var pitchMedianWindow by remember { mutableStateOf(prefs.pitchMedianWindow) } // «Стабильность питча»: 1 = выкл, нечётные 3..7 (билд #54)
         var instrument by remember { mutableStateOf(prefs.instrument ?: (prefs.params.program + 1).coerceIn(1, 128)) } // 1..128 (GM)
         var clef by remember { mutableStateOf(prefs.clef) } // 0 = G (скрипичный), 1 = F (басовый); экспорт MusicXML
         var anacrusis by remember { mutableStateOf(prefs.anacrusis) } // затакт: неполный первый такт из N восьмых, 0..8, 0 = выкл (Р5)
         var listenExternal by remember { mutableStateOf(prefs.listenExternal) } // «Слушать»: false = встроенный плеер, true = внешняя программа
+        // Выходная громкость MIDI (билд #51, п.2 приёмки #50: «сейчас
+        // субъективно громкость миди на 20 % ниже чем WAV»): CC7 каналов
+        // встроенного плеера, %; 100 — заводская громкость синтезатора
+        // (замерено: CC7 = 100), запас до 127 %
+        var midiVolume by remember { mutableStateOf(prefs.midiVolume) }
+        // Выходная громкость WAV-воспроизведения (билд #52, п.3 приёмки #51):
+        // проценты ☰-меню «Слушать», 100 = как записано; множитель — в плеер
+        var wavVolume by remember { mutableStateOf(prefs.wavVolume) }
+        // Развёрнутость секций панели (билд #52, п.6 приёмки #51): id → открыта;
+        // секции без записи открываются по своему дефолту (см. Collapsible)
+        var sections by remember { mutableStateOf(prefs.sections) }
         // Final tempo/size: export-only values (applied to the MIDI on
         // listen/save, never passed to the engine). An explicit edit
         // (override) wins, otherwise the last auto-detected value is shown
@@ -193,9 +223,21 @@ fun App() {
         // (п.5: индикатор от начала + полоска канваса), -1 = ничего не играет
         var recPlaying by remember { mutableStateOf(false) }
         var playPosSec by remember { mutableStateOf(-1f) }
-        // «Звучание»: 0 = «Кванты» (ритмика, Вход), 1 = «Тоны» (мелодика,
-        // Выход), 2 = ABC (замечание 8; билд #35, п.3 — переименованы)
-        var notesTab by remember { mutableStateOf(if (prefs.showAbc) 2 else 1) }
+        // «Звучание»: 0 = «Спектр» (спектрограмма входа, билд #47 — первая,
+        // имя — билд #49), 1 = «Кванты» (ритмика, Вход), 2 = «Тоны» (мелодика, Выход),
+        // 3 = ABC (замечание 8; билд #35, п.3 — переименованы).
+        // Билд #48: активная вкладка хранится в prefs (возврат к той, что
+        // выбрал пользователь); скрытая «ABC» не может быть активной.
+        var notesTab by remember {
+            mutableStateOf(if (!prefs.showAbc && prefs.notesTab == 3) 2 else prefs.notesTab)
+        }
+        // Спектрограмма текущего материала — файла или свежей записи
+        // (билд #48): считается сразу при появлении материала, а не при
+        // прогоне, — вкладка «Спектр» видна до транскрипции
+        var inputSpec by remember { mutableStateOf<Spectrogram?>(null) }
+        var specBusy by remember { mutableStateOf(false) }
+        // ☰-меню «Гистограмма»: гамма цветов спектрограммы (билд #49)
+        var gamma by remember { mutableStateOf(Gamma.byId(prefs.gamma)) }
         var showAbc by remember { mutableStateOf(prefs.showAbc) } // ☰-меню «Вид»: «ABC-notation» (билд #35, п.2)
         var exportFmt by remember { mutableStateOf(prefs.exportFmt) } // «Экспорт» низа: последний формат (п.6)
         // ☰-меню «Файл признаков» (билд #38, замечание «б»): автор записи —
@@ -224,11 +266,16 @@ fun App() {
         val current: Version? = versions.getOrNull(selected)
 
         fun savePrefs() {
-            Preferences.save(params, keySel, smoothingWindow, instrument, clef, anacrusis,
-                listenExternal, darkTheme, showAbc, exportFmt, author,
+            Preferences.save(params, keySel, smoothingWindow, pitchMedianWindow, instrument, clef, anacrusis,
+                listenExternal, midiVolume, wavVolume, sections, darkTheme, showAbc, notesTab,
+                gamma.id, exportFmt, author,
                 presetNameText.trim().takeIf { it.isNotEmpty() }, // пусто = пресет не хранится
                 tScale, pitchLo, pitchHi, lastWavDir, lastMidiDir, lastXmlDir)
         }
+
+        /** Состояние секции панели в prefs (билд #52, п.6 приёмки #51). */
+        fun sectionState(id: String, default: Boolean) = sections[id] ?: default
+        fun setSection(id: String, open: Boolean) { sections = sections + (id to open) }
 
         /** Применить пресет (замечание 2): дефолты движка + диффы пресета;
          *  instrument (program) остаётся как выбран в «Экспорте» — единый
@@ -237,6 +284,7 @@ fun App() {
             params = presetParams(p, instrument - 1)
             keySel = presetKeySel(p)
             smoothingWindow = presetSmoothing(p)
+            pitchMedianWindow = presetPitchMedian(p)
             presetNameText = p.name
             savePrefs() // имя применённого пресета — сразу в prefs (замечание «д»)
         }
@@ -258,7 +306,7 @@ fun App() {
                 error = Strings.presetNoName
                 return
             }
-            presetStore.save(Preset(name, diffFromDefaults(params, keySel, smoothingWindow)))
+            presetStore.save(Preset(name, diffFromDefaults(params, keySel, smoothingWindow, pitchMedianWindow)))
             presetNameText = name
             savePrefs() // имя сохранённого пресета — сразу в prefs (замечание «д»)
         }
@@ -284,7 +332,35 @@ fun App() {
         }
 
         // Persist on every change so an abrupt exit (crash, kill) loses nothing.
-        LaunchedEffect(params, keySel, smoothingWindow, instrument, clef, anacrusis, listenExternal, darkTheme, showAbc, exportFmt, author, tScale, pitchLo, pitchHi) { savePrefs() }
+        LaunchedEffect(params, keySel, smoothingWindow, pitchMedianWindow, instrument, clef, anacrusis, listenExternal, midiVolume, wavVolume, sections, darkTheme, showAbc, notesTab, gamma, exportFmt, author, tScale, pitchLo, pitchHi) { savePrefs() }
+
+        // Громкость MIDI — в плеер (билд #51): при старте (значение из prefs)
+        // и на каждое движение слайдера; setVolume применяет CC7 и к уже
+        // звучащему воспроизведению, поэтому перезапуск не нужен
+        LaunchedEffect(midiVolume) { MidiPlayer.setVolume(midiVolume) }
+
+        // Громкость WAV — в плеер записи (билд #52, п.3 приёмки #51): значение
+        // читается писателем на каждом блоке, перезапуск не нужен
+        LaunchedEffect(wavVolume) { WavPlayer.volume = wavVolume / WAV_VOLUME_DIVISOR }
+
+        /** Спектрограмма материала (билд #48): сырой вход ([pcm], [sr]) —
+         *  выбранный файл или законченная запись. Считается сразу при
+         *  появлении материала, поэтому вкладка «Спектр» показывает обзор до
+         *  прогона. [current] проверяется по завершении (главный поток):
+         *  результат устаревшего материала не подменяет новый. Сбой обзора
+         *  не мешает работе — вкладка покажет «(результатов нет)». */
+        fun computeSpectrogram(pcm: FloatArray, sr: Int, current: () -> Boolean) {
+            specBusy = true
+            scope.launch {
+                val s = withContext(Dispatchers.Default) {
+                    runCatching { V2mEngine.spectrogram(pcm, sr) }.getOrNull()
+                }
+                if (current()) {
+                    inputSpec = s
+                    specBusy = false
+                }
+            }
+        }
 
         fun chooseWav() {
             val dlg = FileDialog(null as Frame?, Strings.loadTitle, FileDialog.LOAD)
@@ -297,6 +373,14 @@ fun App() {
             WavPlayer.stop(); recPlaying = false // и её воспроизведение (п.1 приёмки #43)
             error = null
             lastWavDir = dlg.directory
+            // Спектрограмма нового материала (билд #48) — сразу, без прогона
+            inputSpec = null
+            scope.launch {
+                val (pcm, sr) = withContext(Dispatchers.IO) {
+                    runCatching { readWavMono(f) }.getOrNull()
+                } ?: return@launch
+                computeSpectrogram(pcm, sr) { wavFile == f && rec == null }
+            }
             savePrefs()
         }
 
@@ -414,6 +498,10 @@ fun App() {
                     // Имя уже назначено при старте записи (замечание 3а
                     // приёмки #43) — после успеха не меняется.
                     recSaved = false
+                    // Спектрограмма записи (билд #48) — сразу по окончании
+                    // захвата: вкладка «Спектр» готова до прогона
+                    inputSpec = null
+                    computeSpectrogram(result.pcm, result.sr) { rec === result }
                 } else {
                     Log.d("rec", "запись: данных нет (result == null)")
                 }
@@ -497,7 +585,11 @@ fun App() {
             val inputName = recName ?: wavFile?.name ?: return
             busy = true
             error = null
-            params = params.copy(program = instrument - 1) // инструмент «Экспорта» — единый источник (в отчёт/JSON)
+            // Инструмент «Экспорта» — единый источник (в отчёт/JSON); сглаживание
+            // контура (билд #52, п.5 приёмки #51) — из своего слайдера «Мелодики»,
+            // в Params оно отдельным каналом, как keySel (см. Preferences)
+            params = params.copy(program = instrument - 1, smoothingWindow = smoothingWindow,
+                pitchMedianWindow = pitchMedianWindow)
             scope.launch(Dispatchers.Default) {
                 try {
                     // «Вход» (замечание 8): повторный прогон с нейтральной
@@ -532,16 +624,35 @@ fun App() {
                             if (finalTempoOverride == null) finalTempoText = finalTempoDetected
                             finalSizeDetected = "${song.tsNum}/${song.tsDen}"
                         }
+                        // Спектрограмма входа (билд #47/#48) — уже посчитана
+                        // по материалу (вкладка «Спектр»); версия лишь
+                        // запоминает её для истории. Если расчёт ещё идёт,
+                        // вкладка покажет его по завершении (inputSpec).
+                        val spec = inputSpec
+                        // Обработанный материал (билд #50, п.2 модели RAW):
+                        // те же эффекты «Обработки», что получила модель
+                        // (v2m_process_audio), — по ним вкладка «Спектр»
+                        // показывает результат обработки (п.3), нажатие на
+                        // канву возвращает RAW (п.4). Отчёт и кадровая сводка
+                        // снимаются до расчёта: его вызовы их не трогают
+                        val report = V2mEngine.lastReport()
+                        val framesJson = V2mEngine.lastFramesJson()
+                        val specOut = runCatching {
+                            V2mEngine.processAudio(pcm, sr, params)
+                                ?.let { V2mEngine.spectrogram(it, V2mEngine.SAMPLE_RATE) }
+                        }.getOrNull()
                         val v = Version(
                             midi = bytes,
                             notes = song?.notes ?: emptyList(),
-                            report = V2mEngine.lastReport(),
+                            report = report,
                             wavName = inputName,
                             params = params,
                             midiIn = midiIn,
                             notesIn = notesIn,
                             reportIn = reportIn,
-                            framesJson = V2mEngine.lastFramesJson().ifBlank { null },
+                            framesJson = framesJson.ifBlank { null },
+                            spec = spec,
+                            specOut = specOut,
                         )
                         versions = versions + v
                         selected = versions.size - 1
@@ -802,7 +913,7 @@ fun App() {
                     OutlinedButton(onClick = ::recListen,
                         enabled = (rec != null || wavFile != null) && !busy && recPhase == RecPhase.Idle,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                        modifier = Modifier.semantics {
+                        modifier = Modifier.height(CtrlHeight).semantics {
                             contentDescription =
                                 if (recPlaying) Strings.recStopListenCd else Strings.recListenCd
                         }) {
@@ -858,13 +969,36 @@ fun App() {
                     TextButton(onClick = ::savePreset) { Text(Strings.saveLabel, style = MaterialTheme.typography.body2) }
                 }
 
+                // 0. Обработка — аудиоэффекты перед моделью (билд #50, пп.6–9
+                //    приёмки #49): шумоподавитель, НЧ/ВЧ-фильтр (два движка),
+                //    «Компрессор-Экспандер» (перенесён из «Ритмики»; метка
+                //    переименована билдом #51, сила удвоена — п.1 приёмки #50).
+                //    Применяются к сигналу только при «Транскрипт» — до этого
+                //    канва «Спектр» и гистограмма не меняются (пп.1–2 модели
+                //    RAW); обработанный материал показывается после прогона,
+                //    RAW — по нажатию на канву (пп.3–4)
+                Collapsible(Strings.secProcessing, sectionState("processing", true),
+                    { setSection("processing", it) }) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        ParamGate(Strings.gateLabel, params.gateDb, "gate") { params = params.copy(gateDb = it) }
+                        ParamCut(Strings.cutLabel, params.lowCutHz, params.highCutHz, "cutFilter") { lo, hi ->
+                            params = params.copy(lowCutHz = lo, highCutHz = hi)
+                        }
+                        ParamExpComp(Strings.expCompLabel, params.expComp, "expComp") { params = params.copy(expComp = it) }
+                    }
+                }
+
+                Divider()
+
                 // 1. Ритмика — длительность, атака, темп (свёртываемый).
                 // Замечание 3: «Квантизация» стоит перед темпом и допуском;
                 // при off (0) темп и допуск недоступны — сетка выключена.
-                Collapsible(Strings.secRhythm, defaultOpen = true) {
+                // Слайдер «Компрессия громкости» убран (решение А.М. по
+                // билду #50): параметр остался в движке, пресетах и CLI
+                Collapsible(Strings.secRhythm, sectionState("rhythm", true),
+                    { setSection("rhythm", it) }) {
                     val quantized = params.quantize != 0
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        ParamSlider(Strings.velocityLabel, params.velocityCompress, "velocityCompress") { params = params.copy(velocityCompress = it) }
                         ParamSlider(Strings.onsetLabel, params.onsetThreshold, "onsetThreshold") { params = params.copy(onsetThreshold = it) }
                         ParamSlider(Strings.frameLabel, params.frameThreshold, "frameThreshold") { params = params.copy(frameThreshold = it) }
                         ParamMs(Strings.minLenLabel, params.minNoteLen, "minNoteLen", { params = params.copy(minNoteLen = it) })
@@ -888,9 +1022,17 @@ fun App() {
                 Divider()
 
                 // 2. Мелодика — высотная группа (свёртываемый)
-                Collapsible(Strings.secMelody, defaultOpen = true) {
+                Collapsible(Strings.secMelody, sectionState("melody", true),
+                    { setSection("melody", it) }) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        ParamInt(Strings.smoothingLabel, smoothingWindow, 3..15, "medianFilter", steps = 5) { smoothingWindow = it }
+                        // Ширина окна медианного фильтра — только нечётная
+                        // (чётную движок игнорирует, п.2 приёмки #52):
+                        // положение слайдера поджимается к ближайшему нечётному.
+                        // 1 = «выкл» (дефолт с билда #54, п.2 ответа А.М.)
+                        ParamInt(Strings.smoothingLabel, smoothingWindow, 1..15, "medianFilter", steps = 6) { smoothingWindow = it or 1 }
+                        // «Стабильность питча» (билд #54, Р19): удаление
+                        // коротких нот-выбросов по медиане высот соседей
+                        ParamInt(Strings.pitchMedianLabel, pitchMedianWindow, 1..7, "pitchMedian", steps = 2) { pitchMedianWindow = it or 1 }
                         ParamInt(Strings.mergeLabel, params.harmonizeMerge, 0..3, "harmonizeMerge", steps = 2) { params = params.copy(harmonizeMerge = it) }
                         // «Колоратура» — инверсия minBendBins: 0..5 в UI, в движок идёт 5 − значение
                         ParamInt(Strings.minBendLabel, (5 - params.minBendBins).coerceIn(0, 5), 0..5, "minBendBins", steps = 4) { params = params.copy(minBendBins = (5 - it).coerceIn(0, 5)) }
@@ -912,7 +1054,8 @@ fun App() {
                 //    результата). История прогонов: новые версии сверху — индекс
                 //    версии по порядку прогона idx = size-1-i, выбранный элемент
                 //    и его номер В.NN остаются привязаны к версии, а не к позиции.
-                Collapsible(Strings.secVersions, defaultOpen = true) {
+                Collapsible(Strings.secVersions, sectionState("versions", true),
+                    { setSection("versions", it) }) {
                     LazyColumn(Modifier.heightIn(max = 96.dp)) {
                         items(maxOf(versions.size, 1)) { i ->
                             val idx = versions.size - 1 - i
@@ -948,7 +1091,8 @@ fun App() {
 
                 // 4. Отчёт — свёртываемый, только полезное (без Schema error),
                 //    текст выделяется для копирования
-                Collapsible(Strings.secReport) {
+                Collapsible(Strings.secReport, sectionState("report", false),
+                    { setSection("report", it) }) {
                     val v = current
                     if (v != null) {
                         val song = runCatching { parseMidiSong(v.midi) }.getOrNull()
@@ -999,156 +1143,205 @@ fun App() {
                 //    (финальный прогон); обе — гистограмма (карта
                 //    высота×время). ABC — ноты в abc-нотации (текстовая
                 //    таблица, как было всегда). Клик по ноте — её звучание.
-                Collapsible(Strings.secNotes, defaultOpen = true) {
+                Collapsible(Strings.secNotes, sectionState("notes", true),
+                    { setSection("notes", it) }) {
                     val v = current
-                    if (v != null) {
-                        // ABC-таблица строится по отфильтрованному midi (билд #46,
-                        // фильтр питч-диапазона): ноты вне границ отсутствуют и
-                        // здесь, как и в экспорте; заглушенные «×» остаются
-                        // (muted не передаётся — их строки показывает вкладка)
-                        val song = runCatching {
-                            parseMidiSong(normalizeMidi(v.midi, pitchRange = pitchLo..pitchHi))
+                    // ABC-таблица строится по отфильтрованному midi (билд #46,
+                    // фильтр питч-диапазона): ноты вне границ отсутствуют и
+                    // здесь, как и в экспорте; заглушенные «×» остаются
+                    // (muted не передаётся — их строки показывает вкладка).
+                    // Нет версии — нет и разбора (вкладки «Кванты»/«Тоны»/ABC
+                    // покажут «(результатов нет)»); «Спектр» работает всегда.
+                    val song = v?.let {
+                        runCatching {
+                            parseMidiSong(normalizeMidi(it.midi, pitchRange = pitchLo..pitchHi))
                         }.getOrNull()
-                        if (song != null) {
-                            // Вкладки: высоту Compose рассчитывает по контенту
-                            // (жёсткая 34dp — причина «мешания», замечание А.М.
-                            // 2026-09-06, 4); отступ от области данных —
-                            // вертикальный spacedBy контейнера, не Spacer
-                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                // Вкладка ABC скрывается пунктом меню «Вид» (п.2);
-                                // чекбокс при скрытии переводит позицию на «Тоны»
-                                val tabs = if (showAbc) listOf(0 to Strings.tabInput, 1 to Strings.tabOutput, 2 to Strings.tabAbc)
-                                else listOf(0 to Strings.tabInput, 1 to Strings.tabOutput)
-                                TabRow(selectedTabIndex = notesTab) {
-                                    for ((idx, name) in tabs) {
-                                        // Смена вкладки снимает выделение ноты (панель правки — «Тоны»)
-                                        Tab(selected = notesTab == idx, onClick = { notesTab = idx; selectedKey = null },
-                                            text = { Text(name, style = MaterialTheme.typography.body2) })
+                    }
+                    // Вкладки: высоту Compose рассчитывает по контенту
+                    // (жёсткая 34dp — причина «мешания», замечание А.М.
+                    // 2026-09-06, 4); отступ от области данных —
+                    // вертикальный spacedBy контейнера, не Spacer.
+                    // Билд #48: вкладки видны и без результата — «Спектр»
+                    // не зависит от прогона (спектрограмма материала)
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        // Вкладка ABC скрывается пунктом меню «Вид» (п.2);
+                        // чекбокс при скрытии переводит позицию на «Тоны»
+                        // «Спектр» (билд #47) — первая: обзор материала, с
+                        // которым работает модель (сырое аудио)
+                        val tabs = if (showAbc) listOf(0 to Strings.tabSound, 1 to Strings.tabInput, 2 to Strings.tabOutput, 3 to Strings.tabAbc)
+                        else listOf(0 to Strings.tabSound, 1 to Strings.tabInput, 2 to Strings.tabOutput)
+                        // Вкладки — контурные кнопки (п.3 приёмки #48): активная
+                        // в стиле кнопки PLAY (акцентная рамка и текст),
+                        // неактивные — приглушённый контур; TabRow Material
+                        // тянул тему-заливку и «зацеплялся за тёмную тему»
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            for ((idx, name) in tabs) {
+                                val active = notesTab == idx
+                                OutlinedButton(
+                                    // Смена вкладки снимает выделение ноты (панель правки — «Тоны»)
+                                    onClick = { notesTab = idx; selectedKey = null },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                    border = BorderStroke(1.dp,
+                                        if (active) MaterialTheme.colors.primary
+                                        else MaterialTheme.colors.onSurface.copy(alpha = 0.3f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = if (active) MaterialTheme.colors.primary
+                                        else MaterialTheme.colors.onSurface.copy(alpha = 0.6f)),
+                                ) { Text(name, style = MaterialTheme.typography.body2) }
+                            }
+                        }
+                        when (notesTab) {
+                            // «Спектр» (билд #47) — спектрограмма входа: обзор
+                            // уровня по времени и частоте, с чем пришлось
+                            // работать модели. Только показ: ни на транскрипцию,
+                            // ни на правки не влияет
+                            0 -> {
+                                // Версия запоминает обе спектрограммы: RAW
+                                // (п.0 модели, билд #48) и обработанную
+                                // эффектами «Обработки» (п.3, билд #50);
+                                // пока прогонов нет — показывается материал
+                                val sRaw = v?.spec ?: inputSpec
+                                val s = v?.specOut ?: sRaw
+                                when {
+                                    // Гамма — из меню; дневная тема: цвета
+                                    // инвертируются (проба, п.2 приёмки #48)
+                                    s != null && s.frames > 0 ->
+                                        // Нажатие на канву показывает RAW
+                                        // (п.4: «перерисовывается данными из
+                                        // п.0»), отпускание возвращает
+                                        // обработанный материал
+                                        SpectrogramView(s, tScale, playPosSec = playPosSec,
+                                            gamma = gamma, invert = !darkTheme,
+                                            holdSpec = sRaw.takeIf { it !== s },
+                                            holdLabel = Strings.rawBadge)
+                                    specBusy -> Text(Strings.specComputing)
+                                    else -> Text(Strings.noResults)
+                                }
+                            }
+                            // Вкладки результата требуют прогона и
+                            // разобранного MIDI (билд #48: проверка
+                            // здесь, а не вокруг всего блока — «Спектр»
+                            // работает без версии)
+                            else -> if (v == null || song == null) {
+                                Text(if (v == null) Strings.noResults else Strings.parseFailed)
+                            } else when (notesTab) {
+                                // «Кванты» — гистограмма входа (ритмика): без панели
+                                // правки и без заглушений (п.4 — они только у «Тонов»)
+                                1 -> {
+                                    val notes = v.notesForInput
+                                    if (notes.isEmpty()) {
+                                        Text(Strings.noResults)
+                                    } else {
+                                        // Разметка «Вход» — по автоподбору отчёта своего прогона
+                                        NoteChart(notes, parseKeyFromReport(v.reportForInput), tScale,
+                                            playPosSec = playPosSec, // п.5б: полоска позиции
+                                            onNoteClick = { n -> playNoteTone(n.pitch, n.velocity, n.cents) })
                                     }
                                 }
-                                when (notesTab) {
-                                    // «Кванты» — гистограмма входа (ритмика): без панели
-                                    // правки и без заглушений (п.4 — они только у «Тонов»)
-                                    0 -> {
-                                        val notes = v.notesForInput
-                                        if (notes.isEmpty()) {
-                                            Text(Strings.noResults)
-                                        } else {
-                                            // Разметка «Вход» — по автоподбору отчёта своего прогона
-                                            NoteChart(notes, parseKeyFromReport(v.reportForInput), tScale,
-                                                playPosSec = playPosSec, // п.5б: полоска позиции
-                                                onNoteClick = { n -> playNoteTone(n.pitch, n.velocity, n.cents) })
-                                        }
-                                    }
-                                    // «Тоны» — гистограмма выхода (мелодика) с панелью
-                                    // правки под ней (п.4): клик выделяет ноту рамкой.
-                                    // Фильтр питч-диапазона (билд #46): ноты вне границ
-                                    // скрыты — не видны, не звучат и не правятся
-                                    // (панель: «нет выделения»); «Кванты» не фильтруются
-                                    1 -> {
-                                        val notes = v.notes.filter { it.pitch in pitchLo..pitchHi }
-                                        if (notes.isEmpty()) {
-                                            Text(Strings.noResults)
-                                        } else {
-                                            // Разметка «Выход» — по ключу вывода (выбранная
-                                            // тональность либо автоподбор)
-                                            val key = effectiveKey(v.report)
-                                            NoteChart(notes, key, tScale,
-                                                mutedKeys = v.muted,
-                                                selectedKey = selectedKey,
-                                                playPosSec = playPosSec, // п.5б: полоска позиции
-                                                onNoteClick = { n ->
-                                                    // Выделение — по клику; заглушенная нота
-                                                    // не звучит (возврат звука — повторным [X])
-                                                    val k = noteKeyOf(n)
-                                                    selectedKey = k
-                                                    if (k !in v.muted) playNoteTone(n.pitch, n.velocity, n.cents)
-                                                })
-                                            EditNotePanel(notes, selectedKey, v.muted,
-                                                onDelta = { editNote(v, it) },
-                                                onMute = { toggleMute(v) })
-                                        }
-                                    }
-                                    // ABC — текстовая таблица; нажатие на строке
-                                    // ноты — её звук (5: попадание точно по
-                                    // ячейке; 5.1: событие — с начала клика)
-                                    else -> {
+                                // «Тоны» — гистограмма выхода (мелодика) с панелью
+                                // правки под ней (п.4): клик выделяет ноту рамкой.
+                                // Фильтр питч-диапазона (билд #46): ноты вне границ
+                                // скрыты — не видны, не звучат и не правятся
+                                // (панель: «нет выделения»); «Кванты» не фильтруются
+                                2 -> {
+                                    val notes = v.notes.filter { it.pitch in pitchLo..pitchHi }
+                                    if (notes.isEmpty()) {
+                                        Text(Strings.noResults)
+                                    } else {
+                                        // Разметка «Выход» — по ключу вывода (выбранная
+                                        // тональность либо автоподбор)
                                         val key = effectiveKey(v.report)
-                                        val rows = buildRows(song)
-                                        SelectionContainer {
-                                            LazyColumn(Modifier.heightIn(max = 300.dp)) {
-                                                item {
-                                                    Text(Strings.notesHeader,
-                                                         fontFamily = FontFamily.Monospace,
-                                                         style = MaterialTheme.typography.body2,
-                                                         color = MaterialTheme.colors.onSurface)
-                                                }
-                                                items(rows) { r ->
-                                                    // The absolute position in quarters is kept; the bar
-                                                    // grid is re-computed under the effective signature
-                                                    // (the export override or the detected one). The row
-                                                    // measure/beat come from a tsNum-quarters bar grid;
-                                                    // the *4/tsDen term converts them to real quarters,
-                                                    // and beatPos uses num*4/den per bar, so a den of 8
-                                                    // halves the bar (a 6/8 bar is 3 quarters long).
-                                                    // Заглушенная нота (п.4) занимает строку нулевой
-                                                    // длительности: «×» вместо множителя, 0.00 с, без
-                                                    // громкости и без звука по клику.
-                                                    val effSize = finalSizeOverride ?: (song.tsNum to song.tsDen)
-                                                    val rowQ = (r.measure - 1.0) * song.tsNum + (r.beat - 1.0)
-                                                    val qFromStart = rowQ * 4.0 / song.tsDen
-                                                    val (measure, tilde, frac) = beatPos(qFromStart, effSize.first, effSize.second)
-                                                    val rowMuted = !r.isRest && noteKeyOf(r.startTick, r.pitch) in v.muted
-                                                    val cell = if (rowMuted) noteLabel(r.pitch, key) + "×"
-                                                    else noteCell(r.pitch, r.isRest, r.durationQuarters, key)
-                                                    val vel = if (r.isRest || rowMuted) "" else r.velocity.toString()
-                                                    val durSec = if (rowMuted) 0.0 else r.endSec - r.startSec
-                                                    var rowPressed by remember(r) { mutableStateOf(false) }
-                                                    Text(
-                                                        // The "~" marker occupies a fixed 1-char field so
-                                                        // off-grid beats do not shift the measure number.
-                                                        String.format(Locale.ROOT, "  %1s%02d:%s | %s | %7.2f | %3s",
-                                                            tilde, measure, frac, cell, durSec, vel),
-                                                        fontFamily = FontFamily.Monospace,
-                                                        style = MaterialTheme.typography.body2,
-                                                        modifier = if (r.isRest || rowMuted) Modifier else Modifier
-                                                            // SelectionContainer на Desktop перехватывает нажатия в
-                                                            // Main-пассе — звук и подсветка слушают Initial (п.1:
-                                                            // «выбор ноты в режиме таблицы ABC перестал звучать»);
-                                                            // подсветка — фоном строки на время нажатия (ripple
-                                                            // clickable в Main-пассе не срабатывает — убран)
-                                                            .pointerInput(r) {
-                                                                awaitEachGesture {
-                                                                    val down = awaitFirstDown(pass = PointerEventPass.Initial)
-                                                                    rowPressed = true
-                                                                    // Звук — с нажатия, не с отпускания (замечание 5.1)
-                                                                    if (Log.DEBUG) {
-                                                                        Log.d("abc", "клик по строке p=${r.pitch} v=${r.velocity}")
-                                                                    }
-                                                                    playNoteTone(r.pitch, r.velocity)
-                                                                    // Держать подсветку до отпускания (все пассы)
-                                                                    while (true) {
-                                                                        val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
-                                                                        if (ev.changes.none { it.pressed }) break
-                                                                    }
-                                                                    rowPressed = false
+                                        NoteChart(notes, key, tScale,
+                                            mutedKeys = v.muted,
+                                            selectedKey = selectedKey,
+                                            playPosSec = playPosSec, // п.5б: полоска позиции
+                                            onNoteClick = { n ->
+                                                // Выделение — по клику; заглушенная нота
+                                                // не звучит (возврат звука — повторным [X])
+                                                val k = noteKeyOf(n)
+                                                selectedKey = k
+                                                if (k !in v.muted) playNoteTone(n.pitch, n.velocity, n.cents)
+                                            })
+                                        EditNotePanel(notes, selectedKey, v.muted,
+                                            onDelta = { editNote(v, it) },
+                                            onMute = { toggleMute(v) })
+                                    }
+                                }
+                                // ABC — текстовая таблица; нажатие на строке
+                                // ноты — её звук (5: попадание точно по
+                                // ячейке; 5.1: событие — с начала клика)
+                                else -> {
+                                    val key = effectiveKey(v.report)
+                                    val rows = buildRows(song)
+                                    SelectionContainer {
+                                        LazyColumn(Modifier.heightIn(max = 300.dp)) {
+                                            item {
+                                                Text(Strings.notesHeader,
+                                                     fontFamily = FontFamily.Monospace,
+                                                     style = MaterialTheme.typography.body2,
+                                                     color = MaterialTheme.colors.onSurface)
+                                            }
+                                            items(rows) { r ->
+                                                // The absolute position in quarters is kept; the bar
+                                                // grid is re-computed under the effective signature
+                                                // (the export override or the detected one). The row
+                                                // measure/beat come from a tsNum-quarters bar grid;
+                                                // the *4/tsDen term converts them to real quarters,
+                                                // and beatPos uses num*4/den per bar, so a den of 8
+                                                // halves the bar (a 6/8 bar is 3 quarters long).
+                                                // Заглушенная нота (п.4) занимает строку нулевой
+                                                // длительности: «×» вместо множителя, 0.00 с, без
+                                                // громкости и без звука по клику.
+                                                val effSize = finalSizeOverride ?: (song.tsNum to song.tsDen)
+                                                val rowQ = (r.measure - 1.0) * song.tsNum + (r.beat - 1.0)
+                                                val qFromStart = rowQ * 4.0 / song.tsDen
+                                                val (measure, tilde, frac) = beatPos(qFromStart, effSize.first, effSize.second)
+                                                val rowMuted = !r.isRest && noteKeyOf(r.startTick, r.pitch) in v.muted
+                                                val cell = if (rowMuted) noteLabel(r.pitch, key) + "×"
+                                                else noteCell(r.pitch, r.isRest, r.durationQuarters, key)
+                                                val vel = if (r.isRest || rowMuted) "" else r.velocity.toString()
+                                                val durSec = if (rowMuted) 0.0 else r.endSec - r.startSec
+                                                var rowPressed by remember(r) { mutableStateOf(false) }
+                                                Text(
+                                                    // The "~" marker occupies a fixed 1-char field so
+                                                    // off-grid beats do not shift the measure number.
+                                                    String.format(Locale.ROOT, "  %1s%02d:%s | %s | %7.2f | %3s",
+                                                        tilde, measure, frac, cell, durSec, vel),
+                                                    fontFamily = FontFamily.Monospace,
+                                                    style = MaterialTheme.typography.body2,
+                                                    modifier = if (r.isRest || rowMuted) Modifier else Modifier
+                                                        // SelectionContainer на Desktop перехватывает нажатия в
+                                                        // Main-пассе — звук и подсветка слушают Initial (п.1:
+                                                        // «выбор ноты в режиме таблицы ABC перестал звучать»);
+                                                        // подсветка — фоном строки на время нажатия (ripple
+                                                        // clickable в Main-пассе не срабатывает — убран)
+                                                        .pointerInput(r) {
+                                                            awaitEachGesture {
+                                                                val down = awaitFirstDown(pass = PointerEventPass.Initial)
+                                                                rowPressed = true
+                                                                // Звук — с нажатия, не с отпускания (замечание 5.1)
+                                                                if (Log.DEBUG) {
+                                                                    Log.d("abc", "клик по строке p=${r.pitch} v=${r.velocity}")
                                                                 }
+                                                                playNoteTone(r.pitch, r.velocity)
+                                                                // Держать подсветку до отпускания (все пассы)
+                                                                while (true) {
+                                                                    val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
+                                                                    if (ev.changes.none { it.pressed }) break
+                                                                }
+                                                                rowPressed = false
                                                             }
-                                                            .background(
-                                                                if (rowPressed) MaterialTheme.colors.primary.copy(alpha = 0.15f)
-                                                                else Color.Transparent)
-                                                    )
-                                                }
+                                                        }
+                                                        .background(
+                                                            if (rowPressed) MaterialTheme.colors.primary.copy(alpha = 0.15f)
+                                                            else Color.Transparent)
+                                                )
                                             }
                                         }
                                     }
                                 }
                             }
-                        } else {
-                            Text(Strings.parseFailed)
                         }
-                    } else {
-                        Text(Strings.noResults)
                     }
                 }
 
@@ -1156,7 +1349,8 @@ fun App() {
                 //    сохранения (свёртываемый). Значения применяются к байтам
                 //    MIDI на лету; на транскрипцию не влияют. Правка темпа
                 //    создаёт override (0 или "0/0" возвращает автодетект).
-                Collapsible(Strings.secExport, defaultOpen = true) {
+                Collapsible(Strings.secExport, sectionState("export", true),
+                    { setSection("export", it) }) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(Strings.finalTempoLabel, style = MaterialTheme.typography.body2)
@@ -1351,6 +1545,7 @@ fun App() {
             // click outside. Options grouped by section: «Слушать» — one
             // checkbox where the «Слушать» button plays (off = in-app
             // player, on = OS MIDI app); «Вид» — the dark theme switch;
+            // «Слушать» также несёт аттенюатор MIDI (билд #51, п.2 приёмки #50);
             // «Гистограмма» — the t-scale slider (замечание 7).
             var menuOpen by remember { mutableStateOf(false) }
             // Открытый инфо-диалог меню (замечание А.М. 2026-09-06, 7)
@@ -1360,6 +1555,8 @@ fun App() {
             // применения до [OK])
             var authorDlg by remember { mutableStateOf(false) }
             var authorDlgText by remember { mutableStateOf("") }
+            // Диалог «Гамма» (п.1 приёмки #48): выбор гаммы спектрограммы
+            var gammaDlg by remember { mutableStateOf(false) }
             SoundButton(Res.drawable.menu, { menuOpen = true },
                 Modifier.align(Alignment.TopEnd).size(36.dp))
             if (menuOpen) {
@@ -1385,6 +1582,30 @@ fun App() {
                             listenExternal = !listenExternal
                             menuOpen = false
                         }
+                        // Аттенюатор MIDI (билд #51, п.2 приёмки #50):
+                        // выходная громкость встроенного плеера — CC7 всех
+                        // каналов синтезатора (MidiPlayer.setVolume).
+                        // При внешнем плеере не действует — слайдер выключен.
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
+                            Text(String.format(Locale.ROOT, Strings.menuMidiVolume, midiVolume),
+                                style = MaterialTheme.typography.body2)
+                            Slider(midiVolume.toFloat(), { midiVolume = it.roundToInt() },
+                                valueRange = 0f..127f,
+                                enabled = !listenExternal,
+                                modifier = Modifier.fillMaxWidth())
+                        }
+                        // Громкость WAV-воспроизведения (билд #52, п.3 приёмки
+                        // #51; шкала — билд #53, п.1 приёмки #52): множитель к
+                        // сэмплам ▶ источника (WavPlayer.volume) — запись и
+                        // внешний wav. Регистр 0..100 = 0..25 % усиления, см.
+                        // WAV_VOLUME_MAX / WAV_VOLUME_DIVISOR (Preferences.kt).
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
+                            Text(String.format(Locale.ROOT, Strings.menuWavVolume, wavVolume),
+                                style = MaterialTheme.typography.body2)
+                            Slider(wavVolume.toFloat(), { wavVolume = it.roundToInt() },
+                                valueRange = 0f..WAV_VOLUME_MAX.toFloat(),
+                                modifier = Modifier.fillMaxWidth())
+                        }
                         Divider()
                         Text(Strings.viewMenu, fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.body2,
@@ -1392,8 +1613,8 @@ fun App() {
                         MenuCheck(Strings.menuShowAbc, showAbc) {
                             // Скрытие ABC-вкладки переводит позицию на «Тоны»
                             // и снимает выделение ноты (её панель на «Тонах»)
-                            if (showAbc && notesTab == 2) {
-                                notesTab = 1
+                            if (showAbc && notesTab == 3) {
+                                notesTab = 2
                                 selectedKey = null
                             }
                             showAbc = !showAbc
@@ -1431,6 +1652,13 @@ fun App() {
                                 modifier = Modifier.fillMaxWidth())
                             Text(Strings.chartRangeHint, style = MaterialTheme.typography.body2,
                                 color = MaterialTheme.colors.onSurface.copy(alpha = 0.6f))
+                        }
+                        // Гамма цветов спектрограммы (п.1 приёмки #48):
+                        // список из 4 гамм с образцом шкалы — диалогом
+                        MenuAction(
+                            String.format(Locale.ROOT, Strings.menuGamma, gamma.title)) {
+                            menuOpen = false
+                            gammaDlg = true
                         }
                         Divider()
                         // «Файл признаков» (билд #38): имя автора — в «meta»
@@ -1515,6 +1743,44 @@ fun App() {
                     },
                     dismissButton = {
                         TextButton(onClick = { authorDlg = false }) { Text(Strings.dlgCancel) }
+                    },
+                )
+            }
+            // Диалог «Гамма спектрограммы» (п.1 приёмки #48): 4 гаммы по
+            // 6 опорных узлов; образец — та же палитра, что на «Спектре»
+            // (с учётом инверсии дневной темы, п.2 — видно, что получится)
+            if (gammaDlg) {
+                AlertDialog(
+                    onDismissRequest = { gammaDlg = false },
+                    title = { Text(Strings.gammaTitle) },
+                    text = {
+                        Column {
+                            Text(Strings.gammaHint, style = MaterialTheme.typography.body2,
+                                color = MaterialTheme.colors.onSurface.copy(alpha = 0.6f))
+                            for (g in Gamma.values()) {
+                                val palette = remember(g, darkTheme) { gammaPalette(g, !darkTheme) }
+                                Row(verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        gamma = g
+                                        gammaDlg = false
+                                    }) {
+                                    RadioButton(selected = gamma == g, onClick = null)
+                                    Text(g.title, style = MaterialTheme.typography.body2,
+                                        modifier = Modifier.weight(1f))
+                                    Canvas(Modifier.width(120.dp).height(12.dp)) {
+                                        val step = size.width / 64f
+                                        for (i in 0 until 64) {
+                                            drawRect(Color(palette[i * 255 / 63]),
+                                                topLeft = Offset(i * step, 0f),
+                                                size = Size(step + 0.5f, size.height))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { gammaDlg = false }) { Text(Strings.dlgClose) }
                     },
                 )
             }
@@ -1655,6 +1921,77 @@ private fun ParamRange(label: String, value: Float, range: ClosedFloatingPointRa
                enabled = enabled, modifier = Modifier.fillMaxWidth())
     }
 }
+
+/** Шумоподавитель (билд #50, п.7 приёмки #49): порог −80..0 дБ, левый край
+ *  шкалы = выключен — ровно так же читает значение ядро (audio_effects.cpp:
+ *  gate_db <= -80), отдельного флажка «включено» нет. */
+@Composable
+private fun ParamGate(label: String, db: Float, helpKey: String, onChange: (Float) -> Unit) {
+    val v = db.coerceIn(CUT_OFF_GATE_DB, 0f)
+    Column {
+        ParamLabel("$label: ${if (v <= CUT_OFF_GATE_DB + 0.5f) Strings.fxOff else "${v.roundToInt()} дБ"}", helpKey)
+        Slider(v, { onChange(it) }, valueRange = CUT_OFF_GATE_DB..0f, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+/** НЧ/ВЧ-срезы (билд #50, п.8 приёмки #49): два движка — левый НЧ-срез
+ *  (high-pass), правый ВЧ-срез (low-pass). Шкала логарифмическая (октавы),
+ *  крайние положения = «выкл» — та же семантика, что у ядра (<= 20 Гц и
+ *  >= 10 кГц, см. audio_effects.cpp). */
+@OptIn(ExperimentalMaterialApi::class) // RangeSlider
+@Composable
+private fun ParamCut(label: String, loHz: Float, hiHz: Float, helpKey: String,
+                     onChange: (Float, Float) -> Unit) {
+    val lo = cutFromPos(cutToPos(loHz))
+    val hi = cutFromPos(cutToPos(hiHz))
+    Column {
+        ParamLabel("$label: ${cutText(lo)} … ${cutText(hi)}", helpKey)
+        RangeSlider(
+            value = cutToPos(lo)..cutToPos(hi),
+            onValueChange = { r -> onChange(cutFromPos(r.start), cutFromPos(r.endInclusive)) },
+            valueRange = 0f..1f, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+/** «Компрессор-Экспандер» (билд #50, п.9 приёмки #49; метка переименована
+ *  билдом #51, п.1 приёмки #50): −100..+100 %, центр «0» = выключено;
+ *  влево — аудио-компрессор, вправо — экспандер (движок: apply_exp_comp). */
+@Composable
+private fun ParamExpComp(label: String, value: Float, helpKey: String, onChange: (Float) -> Unit) {
+    val v = value.coerceIn(-100f, 100f)
+    val text = when {
+        v < -0.5f -> "${v.roundToInt()}% (${Strings.expCompCompressor})"
+        v > 0.5f -> "+${v.roundToInt()}% (${Strings.expCompExpander})"
+        else -> Strings.fxOff
+    }
+    Column {
+        ParamLabel("$label: $text", helpKey)
+        Slider(v, { onChange(it) }, valueRange = -100f..100f, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+/** Границы «Обработки» — те же, что у ядра (audio_effects.cpp): порог
+ *  шумоподавителя, границы срезов. Единое место определения для GUI
+ *  (prefs клампят по этим же числам, Preferences.kt). */
+private const val CUT_OFF_GATE_DB = -80f
+private const val CUT_MIN_HZ = 20f
+private const val CUT_MAX_HZ = 10000f
+
+/** Положение движка среза (0..1, логарифмическая шкала) и обратно. */
+private fun cutToPos(hz: Float): Float =
+    (ln(hz.coerceIn(CUT_MIN_HZ, CUT_MAX_HZ) / CUT_MIN_HZ) / CUT_LN_RATIO).coerceIn(0f, 1f)
+
+private fun cutFromPos(pos: Float): Float = CUT_MIN_HZ * exp(pos * CUT_LN_RATIO)
+
+/** Показ среза: крайние положения — «выкл» (20 Гц и 10 кГц не фильтруют). */
+private fun cutText(hz: Float): String = when {
+    hz <= CUT_MIN_HZ + 0.5f || hz >= CUT_MAX_HZ - 50f -> Strings.fxOff
+    hz < 1000f -> "${hz.roundToInt()} Гц"
+    else -> "%.1f кГц".format(Locale.ROOT, hz / 1000f)
+}
+
+/** ln(10 кГц / 20 Гц) — ширина логарифмической шкалы срезов, октав. */
+private val CUT_LN_RATIO = ln(CUT_MAX_HZ / CUT_MIN_HZ)
 
 /** Choice from a fixed list via a small dropdown. */
 @Composable
@@ -1837,23 +2174,30 @@ private fun RecButton(phase: RecPhase, countdown: Int, onClick: () -> Unit, enab
     }
     Button(onClick = onClick, enabled = enabled,
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-        modifier = Modifier.semantics { contentDescription = cd }) {
+        modifier = Modifier.height(CtrlHeight).semantics { contentDescription = cd }) {
         Box(Modifier.size(18.dp)
             .graphicsLayer { alpha = if (phase == RecPhase.Recording) blink.value else 1f }
             .background(Color(0xFFE53935), CircleShape))
     }
 }
 
+/** Высота органов управления ряда записи (билд #49, п.4 приёмки #48):
+ *  [● запись], таймер и [▶] — одной высоты, ряд не «рвётся».
+ *  Единое место определения. */
+private val CtrlHeight = 38.dp
+
 /** Поле таймера записи (билд #40): семисегментные цифры, формат «m:ss»,
  *  отрицательное время — с минусом («-0:03»). lit — яркость сегментов:
- *  1 = активно (отсчёт/запись), 0.3 = «покой» (длительность записи тускло). */
+ *  1 = активно (отсчёт/запись), 0.3 = «покой» (длительность записи тускло).
+ *  Высота — общая с кнопками ряда ([CtrlHeight], билд #49); ширина
+ *  подобрана под неё: знак + «m» + «:» + «ss» = 4.05·cw, cw = 0.62·(H−8). */
 @Composable
 private fun SevenSegDisplay(text: String, lit: Float, modifier: Modifier = Modifier) {
     val bg = Color(0xFF14171B)
-    Box(modifier.width(76.dp).height(32.dp)
+    Box(modifier.width(88.dp).height(CtrlHeight)
         .background(bg, RoundedCornerShape(4.dp)),
         contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 4.dp)) {
+        Canvas(Modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 4.dp)) {
             val hh = size.height
             val t = hh * 0.16f
             val cw = hh * 0.62f

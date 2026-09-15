@@ -95,6 +95,28 @@ fun buildRows(song: SongData): List<NoteRow> {
     return rows
 }
 
+/**
+ * Звучащее время песни в тиках: объединение интервалов нот (не сумма — нота
+ * внутри другой не удваивается). Метрика для проверок обработки нот: слияние
+ * фрагментов и присоединение выбросов («Стабильность питча») сокращают число
+ * нот, но не звучание.
+ */
+fun soundingTicks(song: SongData): Long {
+    var total = 0L
+    var start = -1L
+    var end = -1L
+    for (n in song.notes.sortedBy { it.startTick }) {
+        if (start < 0 || n.startTick > end) {
+            if (start >= 0) total += end - start
+            start = n.startTick
+            end = n.endTick
+        } else if (n.endTick > end) {
+            end = n.endTick
+        }
+    }
+    return if (start >= 0) total + end - start else 0L
+}
+
 /** Minimal SMF parser: notes with absolute ticks; first tempo is used. */
 fun parseMidiSong(midi: ByteArray): SongData {
     var p = 0

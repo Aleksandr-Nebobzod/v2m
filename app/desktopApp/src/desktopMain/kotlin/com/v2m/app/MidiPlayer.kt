@@ -23,8 +23,33 @@ object MidiPlayer {
     private var seq: Sequencer? = null      // devices of the current playback
     private var synth: Synthesizer? = null
     private var diagnosed = false
+    private var volumeCc = 100              // выходная громкость (CC7 всех каналов)
 
     val isPlaying: Boolean get() = synchronized(lock) { done != null }
+
+    /** Выходная громкость встроенного плеера (билд #51, п.2 приёмки #50).
+     *  Шкала — это CC7 (channel volume) всех 16 каналов синтезатора,
+     *  в процентах: 100 % = заводская громкость синтезатора (замерено на
+     *  SoftSynthesizer: CC7 = 100 — поэтому «как было»), 127 % — максимум
+     *  синтезатора (запас ≈ +2 дБ, ответ на «миди тише WAV»), 0 % — тишина.
+     *  Действует на встроенный плеер (тоны нот, версии, воспроизведение
+     *  файла), на внешний MIDI-плеер — нет. */
+    fun setVolume(pct: Int) {
+        val cc = volumeCcFor(pct)
+        val s = synchronized(lock) {
+            volumeCc = cc
+            synth
+        }
+        if (s != null) applyVolume(s, cc)
+    }
+
+    /** Значение CC7 для процента UI (0..127, крайние значения поджаты).
+     *  Вынесено отдельно — проверяется самотестом. */
+    fun volumeCcFor(pct: Int): Int = pct.coerceIn(0, 127)
+
+    private fun applyVolume(s: Synthesizer, cc: Int) {
+        runCatching { for (ch in s.channels) ch?.controlChange(7, cc) }
+    }
 
     /** Позиция текущего воспроизведения в секундах от начала файла
      *  (п.5а приёмки #43): UI опрашивает в своём цикле тиков; 0, когда
@@ -54,6 +79,9 @@ object MidiPlayer {
             s.open()
             q.open()
             diagnose(s)
+            // Аттенюатор (билд #51): синтезатор открыт заново — ставим текущую
+            // громкость до первого события; CC7 живёт вместе с синтезатором
+            applyVolume(s, synchronized(lock) { volumeCc })
             if (s.defaultSoundbank == null || s.loadedInstruments.isEmpty()) {
                 throw IllegalStateException(
                     "в этой JVM нет звукового банка — синтезатор будет без звука")

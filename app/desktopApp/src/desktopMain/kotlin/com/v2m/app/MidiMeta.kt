@@ -18,7 +18,9 @@ fun paramsCli(p: V2mEngine.Params): String = buildString {
     append("--harmonize-merge ${p.harmonizeMerge} ")
     append("--min-bend ${p.minBendBins} ")
     append("--global-shift ${p.globalShift} ")
-    append("--mode-snap ${p.modeSnap}")
+    append("--mode-snap ${p.modeSnap} ")
+    append("--smoothing ${p.smoothingWindow} ")
+    append("--pitch-median ${p.pitchMedianWindow}")
 }
 
 /** Parameters + report as a JSON document (for the Sequencer Specific meta). */
@@ -39,7 +41,12 @@ fun buildParamsJson(wavName: String, p: V2mEngine.Params, report: String, key: K
         append("\"harmonizeMerge\":${p.harmonizeMerge},")
         append("\"minBendBins\":${p.minBendBins},")
         append("\"globalShift\":${p.globalShift},")
-        append("\"modeSnap\":${p.modeSnap}")
+        append("\"modeSnap\":${p.modeSnap},")
+        // «Мелодика» (билд #54): сглаживание кадров и стабильность питча —
+        // раньше smoothingWindow попадал в паспорт только строкой отчёта
+        // «smoothing: N frames», в параметрах его не было
+        append("\"smoothingWindow\":${p.smoothingWindow},")
+        append("\"pitchMedianWindow\":${p.pitchMedianWindow}")
     }
     return "{\"file\":${s(wavName)},\"params\":{$params}," +
             "\"key\":${s(key?.name ?: "")},\"report\":${s(report)}}"

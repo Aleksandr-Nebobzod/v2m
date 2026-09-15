@@ -92,10 +92,12 @@ internal fun parseDiff(s: String): Map<String, String> =
     }.toMap()
 
 /** Дифф текущих настроек от дефолтов движка (без program — инструмент в
- *  пресет не входит; keySel = 0 и smoothingWindow = 5 считаются дефолтом). */
-fun diffFromDefaults(params: V2mEngine.Params, keySel: Int, smoothingWindow: Int): Map<String, String> {
-    val cur = Preferences.paramsToProps(params, keySel, smoothingWindow)
-    val defs = Preferences.paramsToProps(V2mEngine.Params.defaults(), 0, 5)
+ *  пресет не входит; keySel = 0, сглаживание и стабильность питча = 1
+ *  («выкл», билд #54) считаются дефолтом). */
+fun diffFromDefaults(params: V2mEngine.Params, keySel: Int, smoothingWindow: Int,
+                     pitchMedianWindow: Int): Map<String, String> {
+    val cur = Preferences.paramsToProps(params, keySel, smoothingWindow, pitchMedianWindow)
+    val defs = Preferences.paramsToProps(V2mEngine.Params.defaults(), 0, 1, 1)
     cur.remove("program"); defs.remove("program")
     val diff = LinkedHashMap<String, String>()
     for (k in cur.stringPropertyNames().sorted()) {
@@ -116,6 +118,10 @@ fun presetParams(p: Preset, currentProgram: Int): V2mEngine.Params {
 /** keySel пресета (0 = авто, дефолт). */
 fun presetKeySel(p: Preset): Int = p.diffs["keySel"]?.toIntOrNull()?.coerceIn(0, 24) ?: 0
 
-/** smoothingWindow пресета (нечётное 3..15, дефолт 5). */
+/** smoothingWindow пресета (нечётное 1..15, дефолт 1 = «выкл», билд #54). */
 fun presetSmoothing(p: Preset): Int =
-    ((p.diffs["smoothingWindow"]?.toIntOrNull() ?: 5) or 1).coerceIn(3, 15)
+    ((p.diffs["smoothingWindow"]?.toIntOrNull() ?: 1) or 1).coerceIn(1, 15)
+
+/** pitchMedianWindow пресета (нечётное 1..7, дефолт 1 = «выкл», билд #54). */
+fun presetPitchMedian(p: Preset): Int =
+    ((p.diffs["pitchMedianWindow"]?.toIntOrNull() ?: 1) or 1).coerceIn(1, 7)

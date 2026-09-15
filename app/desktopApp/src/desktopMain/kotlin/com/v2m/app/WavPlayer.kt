@@ -17,6 +17,15 @@ object WavPlayer {
     private var done: (() -> Unit)? = null  // end callback of the current playback
     private var line: SourceDataLine? = null
 
+    /** Выходная громкость воспроизведения (билд #52, п.3 приёмки #51:
+     *  «можно ли чуть приглушить Wav-воспроизведение внутри v2m?») —
+     *  линейный множитель к сэмплам, 1.0 = как записано. App.kt переводит
+     *  регистр ☰-меню «Слушать» (0..100 = 0..25 %, билд #53). Значение
+     *  читается писателем на каждом блоке, поэтому действует и на уже
+     *  звучащее воспроизведение. */
+    @Volatile
+    var volume: Float = 1.0f
+
     val isPlaying: Boolean get() = synchronized(lock) { done != null }
 
     /** Current playback position in seconds from the start (п.5а приёмки
@@ -98,10 +107,13 @@ object WavPlayer {
             while (synchronized(lock) { g == generation }) {
                 val take = minOf(block, pcm.size - off)
                 if (take <= 0) break
+                // Громкость читается на каждом блоке: слайдер ☰-меню
+                // действует и на уже звучащее воспроизведение
+                val vol = volume
                 var sumSq = 0.0
                 var si: Int
                 for (i in 0 until take) {
-                    val x = pcm[off + i]
+                    val x = pcm[off + i] * vol
                     si = (x * 32767f).toInt().coerceIn(-32768, 32767)
                     bytes[i * 2] = (si and 0xFF).toByte()
                     bytes[i * 2 + 1] = ((si shr 8) and 0xFF).toByte()
