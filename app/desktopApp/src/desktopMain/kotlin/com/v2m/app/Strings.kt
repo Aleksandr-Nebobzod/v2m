@@ -10,9 +10,23 @@ object Strings {
     const val noFile = "файл не выбран"
     const val recCd = "Записать с микрофона"
     const val recCountdownCd = "Запуск записи через %d… (нажмите — отменить)"
+    // Отсчёт 2 с (билд #56): −0:01..−0:00, поэтому на нуле — без «через 0…»
+    const val recStartCd = "Запуск записи… (нажмите — отменить)"
     const val recStopCd = "Остановить запись"
     const val recUnavailable = "микрофон недоступен"
     const val saveRecTitle = "Сохранить запись"
+    // Диалог перед действием, теряющим несохранённую запись (билд #56)
+    const val recUnsavedTitle = "Запись не сохранена"
+    const val recUnsavedAsk = "Аудиоматериал (запись) не сохранён в файл.\nСохранить его перед продолжением?"
+    const val recUnsavedSave = "Сохранить"
+    const val recUnsavedSkip = "Не сохранять"
+    const val recUnsavedCancel = "Отмена"
+    // Подтверждение перезаписи существующего файла (билд #57, п.2б приёмки #56)
+    const val recOverwriteTitle = "Заменить файл?"
+    const val recOverwriteAsk = "Файл «%s» уже существует.\nЗаменить его?" // %s — имя файла
+    const val recOverwriteReplace = "Заменить"
+    const val recOverwriteNewName = "Другое имя"
+    const val recOverwriteCancel = "Отмена"
     const val transcribe = "Транскрипт"
     const val busy = "Идёт обработка..."
     const val listen = "Слушать"
@@ -81,6 +95,8 @@ object Strings {
     const val parseFailed = "(не удалось разобрать MIDI)"
     // Вкладка «Спектр»: спектрограмма материала считается в фоне (билд #48)
     const val specComputing = "(расчёт спектрограммы…)"
+    // Граница на канве «Спектр»: время конца последней ноты прогона (билд #56)
+    const val notesEndMark = "конец нот"
     const val paramsLine = "параметры: %s"
     const val fileLine = "файл: %s"
     const val tempoLine = "темп: %.2f BPM, размер %d/%d, нот: %d, L=1/8"

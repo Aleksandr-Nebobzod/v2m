@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -41,68 +42,89 @@ import kotlin.math.roundToInt
 /** Границы обзора и кадр — те же, что в basicpitch/src/spectrogram.hpp. */
 private const val SPEC_F_MIN = 10.0
 private const val SPEC_F_MAX = 10000.0
-private const val SPEC_HOP = 256.0
+internal const val SPEC_HOP = 256.0 // internal — тот же hop проверяет самотест
 private const val SPEC_SR = 22050.0
 
+/** Позиции узлов палитры (билд #56, OQ-19: «для всех (кроме Магмы) следует
+ *  чуть шире сделать среднюю область, а края контрастнее»): крайние отрезки
+ *  0.16 вместо 0.20 — рост из чёрного и выход в белый круче; средний отрезок
+ *  0.28 вместо 0.20 — средние уровни занимают больше шкалы. */
+private val NODE_POS_SHAPED = listOf(0.00f, 0.16f, 0.36f, 0.64f, 0.84f, 1.00f)
+
+/** Прежние равномерные позиции — «Магма» (оставлена как есть, решение А.М.). */
+private val NODE_POS_EVEN = listOf(0.00f, 0.20f, 0.40f, 0.60f, 0.80f, 1.00f)
+
+/** Узлы палитры: [colors] по возрастанию уровня, позиции — [pos]. */
+private fun stops(colors: List<IntArray>, pos: List<Float> = NODE_POS_SHAPED) =
+    pos.mapIndexed { i, t -> t to colors[i] }
+
 /** Гаммы спектрограммы (билд #49): у каждой — 6 опорных узлов, между узлами
- *  линейная интерполяция в RGB (256 цветов). «Магма» — прежний ручной подбор
- *  (билд #47, оставлен по решению А.М.); «Плазма»/«Виридис» — узлы, снятые из
- *  таблиц карт plasma/viridis (Nathaniel J. Smith, Stéfan van der Walt, CC0)
- *  в точках 0.0/0.2/0.4/0.6/0.8/1.0. «Монохром» — вместо «Инферно» по
- *  приёмке #50 п.3; нейтральная серая шкала (билд #52, п.4 приёмки #51:
- *  «лучше сделать монохром нейтральным — без тёплого-холодного»):
- *  R = G = B на всём протяжении, инверсия дневной темы даёт зеркальный
- *  серый (белый ↔ чёрный), без цветного оттенка. */
+ *  линейная интерполяция в RGB (256 цветов); порядок списка — по приёмке
+ *  #55 (OQ-19): «Монохром» первым. «Магма» — прежний ручной подбор (билд #47,
+ *  оставлен как есть); «Зима-Блю» — от чёрно-синего к белому через голубой,
+ *  «Гольф» — от чёрно-зелёного к белому через травяной (билд #56, вместо
+ *  «Плазмы» и «Виридиса»; их id из prefs ведут на новые гаммы; билд #57, п.3
+ *  приёмки #56: «Тропик» переименована в «Гольф», цвета без изменений).
+ *  «Монохром» —
+ *  нейтральная серая шкала (билд #52, п.4 приёмки #51: «лучше сделать
+ *  монохром нейтральным — без тёплого-холодного»): R = G = B на всём
+ *  протяжении, инверсия дневной темы даёт зеркальный серый (белый ↔ чёрный),
+ *  без цветного оттенка. */
 internal enum class Gamma(val id: String, val title: String, val stops: List<Pair<Float, IntArray>>) {
-    MAGMA(
-        "magma", "Магма", listOf(
-            0.00f to intArrayOf(0, 0, 0),
-            0.20f to intArrayOf(28, 16, 68),
-            0.40f to intArrayOf(96, 24, 110),
-            0.60f to intArrayOf(186, 54, 85),
-            0.80f to intArrayOf(248, 142, 40),
-            1.00f to intArrayOf(252, 250, 214),
-        ),
-    ),
     MONOCHROME(
-        "monochrome", "Монохром", listOf(
-            0.00f to intArrayOf(0, 0, 0),       // чёрный
-            0.20f to intArrayOf(51, 51, 51),
-            0.40f to intArrayOf(102, 102, 102),
-            0.60f to intArrayOf(153, 153, 153),
-            0.80f to intArrayOf(204, 204, 204),
-            1.00f to intArrayOf(255, 255, 255), // белый
-        ),
+        "monochrome", "Монохром", stops(listOf(
+            intArrayOf(0, 0, 0),       // чёрный
+            intArrayOf(51, 51, 51),
+            intArrayOf(102, 102, 102),
+            intArrayOf(153, 153, 153),
+            intArrayOf(204, 204, 204),
+            intArrayOf(255, 255, 255), // белый
+        )),
     ),
-    PLASMA(
-        "plasma", "Плазма", listOf(
-            0.00f to intArrayOf(13, 8, 135),
-            0.20f to intArrayOf(106, 0, 168),
-            0.40f to intArrayOf(177, 42, 144),
-            0.60f to intArrayOf(225, 100, 98),
-            0.80f to intArrayOf(252, 166, 54),
-            1.00f to intArrayOf(240, 249, 33),
-        ),
+    MAGMA(
+        "magma", "Магма", stops(listOf(
+            intArrayOf(0, 0, 0),
+            intArrayOf(28, 16, 68),
+            intArrayOf(96, 24, 110),
+            intArrayOf(186, 54, 85),
+            intArrayOf(248, 142, 40),
+            intArrayOf(252, 250, 214),
+        ), NODE_POS_EVEN),
     ),
-    VIRIDIS(
-        "viridis", "Виридис", listOf(
-            0.00f to intArrayOf(68, 1, 84),
-            0.20f to intArrayOf(65, 68, 135),
-            0.40f to intArrayOf(42, 120, 142),
-            0.60f to intArrayOf(34, 168, 132),
-            0.80f to intArrayOf(122, 209, 81),
-            1.00f to intArrayOf(253, 231, 37),
-        ),
+    WINTERBLUE(
+        "winter-blue", "Зима-Блю", stops(listOf(
+            intArrayOf(0, 6, 20),        // чёрно-синий
+            intArrayOf(14, 36, 92),
+            intArrayOf(38, 92, 170),
+            intArrayOf(96, 166, 222),    // голубой
+            intArrayOf(178, 220, 245),
+            intArrayOf(255, 255, 255),   // белый
+        )),
+    ),
+    GOLF(
+        "golf", "Гольф", stops(listOf(
+            intArrayOf(0, 12, 6),        // чёрно-зелёный
+            intArrayOf(14, 48, 22),
+            intArrayOf(44, 110, 46),
+            intArrayOf(108, 178, 74),    // травяной
+            intArrayOf(184, 222, 142),
+            intArrayOf(255, 255, 255),   // белый
+        )),
     );
 
     companion object {
         val DEFAULT = MAGMA
 
         /** Гамма по идентификатору из prefs; неизвестный — [DEFAULT].
-         *  "inferno" — прежний id гаммы «Монохром» (билд #49): сохранённый
-         *  выбор не должен прыгать на «Магму» после переименования (билд #51). */
+         *  Прежние id (билд #49) ведут на свои гаммы: сохранённый выбор не
+         *  должен прыгать на «Магму» после переименования — "inferno" →
+         *  «Монохром» (билд #51), "plasma" → «Зима-Блю», "viridis"/"tropic" →
+         *  «Гольф» (билд #56; билд #57 — переименование «Тропика»). */
         fun byId(id: String?): Gamma = when (id) {
             "inferno" -> MONOCHROME
+            "plasma" -> WINTERBLUE
+            "viridis" -> GOLF
+            "tropic" -> GOLF // id пробы билда #56 — не должен прыгать на «Магму» (билд #57)
             else -> values().firstOrNull { it.id == id } ?: DEFAULT
         }
     }
@@ -165,11 +187,15 @@ internal fun spectrogramBitmap(spec: Spectrogram, palette: IntArray): Bitmap? {
  *         «перерисовывается данными из п.0», при отпускании снова
  *         обработанный материал); null — канва только показывает [spec]
  *  @param holdLabel метка в углу канвы в нажатом состоянии (RAW)
+ *  @param notesEndSec конец последней ноты прогона, с (билд #56, OQ-25):
+ *         граница «конец нот» — правее звучания нот нет, там затухание
+ *         материала; < 0 — метка не рисуется
  */
 @Composable
 internal fun SpectrogramView(spec: Spectrogram, tScale: Float, playPosSec: Float = -1f,
                              gamma: Gamma = Gamma.DEFAULT, invert: Boolean = false,
-                             holdSpec: Spectrogram? = null, holdLabel: String? = null) {
+                             holdSpec: Spectrogram? = null, holdLabel: String? = null,
+                             notesEndSec: Float = -1f) {
     val palette = remember(gamma, invert) { gammaPalette(gamma, invert) }
     // Нажатие/удержание (билд #50): пока палец/кнопка на канве — [holdSpec]
     var held by remember { mutableStateOf(false) }
@@ -210,6 +236,10 @@ internal fun SpectrogramView(spec: Spectrogram, tScale: Float, playPosSec: Float
     // Цвета — до Canvas: внутри DrawScope нет доступа к MaterialTheme
     val gridColor = MaterialTheme.colors.onSurface.copy(alpha = 0.35f)
     val posColor = MaterialTheme.colors.primary
+    // Граница «конец нот» (билд #56, OQ-25) — цвет вторичный (в темах
+    // приложения он не совпадает ни с primary-полоской позиции, ни с
+    // гаммами), линия штриховая: она не мешает читать картинку
+    val notesEndColor = MaterialTheme.colors.secondary
     // Плашка метки нажатого состояния (RAW) — фон сплошной, чтобы читалась
     // на любой картинке
     val badgeColor = MaterialTheme.colors.surface.copy(alpha = 0.85f)
@@ -253,6 +283,22 @@ internal fun SpectrogramView(spec: Spectrogram, tScale: Float, playPosSec: Float
                     val y = playPosSec * pxPerSec
                     if (y <= size.height) {
                         drawLine(posColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 2f)
+                    }
+                }
+                // Граница «конец нот» (билд #56, OQ-25): время конца последней
+                // ноты прогона; правее — только затухание материала. Метка
+                // едет вместе с содержимым (это координата, а не индикатор
+                // окна, в отличие от плашки RAW)
+                if (notesEndSec > 0f) {
+                    val y = notesEndSec * pxPerSec
+                    if (y <= size.height) {
+                        drawLine(notesEndColor, Offset(0f, y), Offset(size.width, y),
+                            strokeWidth = 2f,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f)))
+                        val m = textMeasurer.measure(Strings.notesEndMark, style = textStyle)
+                        drawRect(badgeColor, topLeft = Offset(4f, y + 2f),
+                            size = Size(m.size.width + 8f, m.size.height + 4f))
+                        drawText(m, topLeft = Offset(8f, y + 4f))
                     }
                 }
                 // Метка нажатого состояния (RAW, билд #50): у верхнего края

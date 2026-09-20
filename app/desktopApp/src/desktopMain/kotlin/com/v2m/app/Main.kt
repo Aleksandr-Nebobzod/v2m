@@ -12,7 +12,16 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 /** Номер билда = номер записи в docs/history.md, описывающей этот билд
  *  (записи идут подзаголовками с датой/временем, см. «Ход работ»).
  *  internal — показывается в «О программе» (App.kt). */
-internal const val BUILD = 55
+internal const val BUILD = 57
+
+/** Связь `Window.onCloseRequest` ↔ `App()`: колбэк «закрывать ли окно?»
+ *  ставит App() (билд #57, п.2в приёмки #56). [inProgress] — защита от
+ *  повторного запроса: диалоги создаются без parent (не модальны), и клик
+ *  «×» поверх открытого диалога дошёл бы до onCloseRequest вложенно. */
+internal class CloseGuard {
+    var confirm: (() -> Boolean)? = null
+    var inProgress = false
+}
 
 fun main(args: Array<String>) {
     if (args.firstOrNull() == "--self-test") {
@@ -21,8 +30,19 @@ fun main(args: Array<String>) {
     }
     if (Log.DEBUG) Log.install() // журнал кликов тестирования (билд #33)
     application {
-        Window(onCloseRequest = ::exitApplication, title = "v2m #$BUILD — транскрипция аудио в MIDI") {
-            App()
+        val closeGuard = CloseGuard()
+        Window(
+            onCloseRequest = {
+                if (closeGuard.inProgress) return@Window
+                closeGuard.inProgress = true
+                // confirm == null (закрытие до первой композиции) — без диалога
+                val proceed = closeGuard.confirm?.invoke() != false
+                closeGuard.inProgress = false
+                if (proceed) exitApplication()
+            },
+            title = "v2m #$BUILD — транскрипция аудио в MIDI",
+        ) {
+            App(closeGuard)
         }
     }
 }
@@ -107,6 +127,13 @@ private fun selfTest() {
     println("SELF-TEST: spectrogram ${spec.frames}x${spec.bands} max=$specMax nonzero=$specNonZero -> ${specPng.name}")
     check(spec.frames > 0 && spec.bands == 120) { "spectrogram shape: ${spec.frames}x${spec.bands}" }
     check(specMax > 0 && specNonZero > spec.frames * spec.bands / 20) { "spectrogram empty: max=$specMax nonzero=$specNonZero" }
+    // Билд #56 (OQ-25): кадров — вверх от n_samples/hop: картинка покрывает
+    // материал целиком и не берёт лишнего кадра (прежнее деление теряло
+    // хвост короче hop ≈ 11.6 мс, и спектрограмма была короче материала)
+    val hop = SPEC_HOP.toInt()
+    check(spec.frames * hop >= pcm.size && (spec.frames - 1) * hop < pcm.size) {
+        "кадры спектрограммы ${spec.frames} не покрывают материал ${pcm.size} при hop=$hop" }
+    println("SELF-TEST: кадры спектрограммы ${spec.frames} × $hop = ${spec.frames * hop} ≥ ${pcm.size} сэмплов")
 
     // Билд #50: «Обработка» (gate, НЧ/ВЧ-срезы, компрессор-экспандер) —
     // аудиоэффекты до модели (v2m_process_audio). Пробы: при выключенных
@@ -206,8 +233,31 @@ private fun selfTest() {
 
     // Билд #49: гаммы спектрограммы (п.1 приёмки #48) — 4 палитры по 256
     // цветов, попарно различны; инверсия (дневная тема, п.2) — точное
-    // дополнение по каналам, альфа сохраняется
+    // дополнение по каналам, альфа сохраняется.
+    // Билд #56 (OQ-19): порядок «Монохром» → «Магма» → «Зима-Блю» → «Гольф»
+    // (Плазма/Виридис заменены; билд #57: «Тропик» переименована в «Гольф»,
+    // п.3 приёмки #56); узлы всех гамм кроме «Магмы» переформированы
+    // («средняя область шире, края контрастнее»); прежние id ведут на новые
     val gammas = Gamma.values()
+    check(gammas.map { it.id } == listOf("monochrome", "magma", "winter-blue", "golf")) {
+        "порядок гамм (билд #57): ${gammas.map { it.id }}" }
+    check(gammas.map { it.title } == listOf("Монохром", "Магма", "Зима-Блю", "Гольф")) {
+        "названия гамм: ${gammas.map { it.title }}" }
+    check(Gamma.byId("plasma") == Gamma.WINTERBLUE && Gamma.byId("viridis") == Gamma.GOLF
+        && Gamma.byId("tropic") == Gamma.GOLF) {
+        "прежние id plasma/viridis/tropic должны вести на «Зиму-Блю»/«Гольф»" }
+    val evenNodes = listOf(0f, 0.2f, 0.4f, 0.6f, 0.8f, 1f)
+    val shapedNodes = listOf(0f, 0.16f, 0.36f, 0.64f, 0.84f, 1f)
+    for (g in gammas) {
+        val want = if (g === Gamma.MAGMA) evenNodes else shapedNodes
+        check(g.stops.map { it.first } == want) {
+            "гамма ${g.id}: позиции узлов ${g.stops.map { it.first }}, ожидались $want" }
+    }
+    for (g in listOf(Gamma.WINTERBLUE, Gamma.GOLF)) {
+        val p = gammaPalette(g)
+        check((p.last() and 0xFFFFFF) == 0xFFFFFF) { "гамма ${g.id}: верх шкалы не белый" }
+        check((p.first() and 0xFFFFFF) != 0) { "гамма ${g.id}: низ шкалы не «чёрно-цветный»" }
+    }
     for (g in gammas) {
         val p = gammaPalette(g)
         val inv = gammaPalette(g, invert = true)

@@ -59,11 +59,11 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.v2m.app.resources.menu
 import java.awt.Desktop
-import java.awt.Desktop.Action
 import java.awt.FileDialog
 import java.awt.Frame
 import java.net.URI
 import javax.swing.JFileChooser
+import javax.swing.JOptionPane
 import javax.swing.filechooser.FileNameExtensionFilter
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -164,7 +164,7 @@ private fun Collapsible(
 
 @Composable
 @OptIn(ExperimentalMaterialApi::class) // RangeSlider (билд #46)
-fun App() {
+internal fun App(closeGuard: CloseGuard) {
     val prefs = remember { Preferences.load() }
     var darkTheme by remember { mutableStateOf(prefs.darkTheme) } // ☰-меню «Вид»: тёмная тема
     MaterialTheme(colors = if (darkTheme) darkColors() else lightColors()) {
@@ -362,7 +362,90 @@ fun App() {
             }
         }
 
+        /** Сохранение записи в WAV (диалог JFileChooser). Успех — [recSaved];
+         *  отмена диалога или сбой — запись остаётся несохранённой.
+         *  Билд #57 (п.2б приёмки #56): существующий файл не перезаписывается
+         *  молча — подтверждение «Заменить?» («Другое имя» возвращает к
+         *  диалогу выбора; диалог создаётся один раз до цикла, чтобы
+         *  навигация по каталогам не терялась).
+         *  Объявлена до [chooseWav] и [onRecClick]: локальные функции Kotlin
+         *  не имеют forward-ссылок, а оба действия спрашивают о несохранённой
+         *  записи ([confirmUnsavedRecording]). */
+        fun saveRecording() {
+            val r = rec ?: return
+            val chooser = JFileChooser(lastWavDir ?: System.getProperty("user.home"))
+            chooser.dialogTitle = Strings.saveRecTitle
+            chooser.isAcceptAllFileFilterUsed = false
+            chooser.fileFilter = FileNameExtensionFilter(".wav", "wav")
+            // Билд #45: имя могло быть стёрто в поле (recName = "") — пустое
+            // имя не подставлять в диалог (File("") бессмысленен)
+            chooser.selectedFile = File(recName?.takeIf { it.isNotBlank() } ?: "rec.wav")
+            while (true) {
+                if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) return
+                var f = chooser.selectedFile
+                if (!f.name.lowercase(Locale.ROOT).endsWith(".wav")) f = File(f.parentFile, f.name + ".wav")
+                // Билд #57 (п.2б приёмки #56): дописанное «.wav» не видел
+                // встроенный диалог — существующий файл подтверждается здесь
+                if (f.exists()) {
+                    val opt = JOptionPane.showOptionDialog(
+                        null, Strings.recOverwriteAsk.format(f.name), Strings.recOverwriteTitle,
+                        JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE, null,
+                        arrayOf(Strings.recOverwriteReplace, Strings.recOverwriteNewName, Strings.recOverwriteCancel),
+                        Strings.recOverwriteReplace,
+                    )
+                    Log.d("rec", "перезапись «${f.name}»: ответ $opt")
+                    if (opt == 1 || opt == JOptionPane.CLOSED_OPTION) continue // «Другое имя» → снова диалог
+                    if (opt != 0) return // «Отмена» → сохранение отменено
+                }
+                lastWavDir = f.parentFile?.path
+                try {
+                    writeWavMono(f, r.pcm, r.sr)
+                    recSaved = true
+                    savePrefs()
+                } catch (e: Exception) {
+                    error = e.message ?: e.toString()
+                }
+                return
+            }
+        }
+
+        /** Билд #56 (п. «б» приёмки #55): перед действием, теряющим
+         *  несохранённую запись («Запись», «Выбрать WAV»), — диалог
+         *  «Сохранить?». true — продолжать действие: сохранять нечего, запись
+         *  уже сохранена, либо пользователь выбрал «Не сохранять».
+         *  «Сохранить» с отменённым диалогом файла отменяет и само действие
+         *  (материал не теряется молча); «Отмена» — отмена действия. */
+        fun confirmUnsavedRecording(): Boolean {
+            if (rec == null || recSaved) return true
+            val options = arrayOf(Strings.recUnsavedSave, Strings.recUnsavedSkip, Strings.recUnsavedCancel)
+            val choice = JOptionPane.showOptionDialog(
+                null, Strings.recUnsavedAsk, Strings.recUnsavedTitle,
+                JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null,
+                options, options[0],
+            )
+            Log.d("rec", "диалог «Сохранить?»: ответ $choice")
+            return when (choice) {
+                0 -> { saveRecording(); recSaved }
+                1 -> true
+                else -> false
+            }
+        }
+
+        // Билд #57 (п.2в приёмки #56): закрытие окна спрашивает о несохранённой
+        // записи тем же диалогом «Сохранить?» — колбэк забирает Main.kt
+        // (onCloseRequest). Стоит после confirmUnsavedRecording: у локальных
+        // функций Kotlin нет forward-ссылок. Лямбда захватывает MutableState,
+        // поэтому читает актуальные rec/recSaved в момент закрытия.
+        DisposableEffect(closeGuard) {
+            closeGuard.confirm = { confirmUnsavedRecording() }
+            onDispose { closeGuard.confirm = null }
+        }
+
         fun chooseWav() {
+            // Билд #57 (п.2а приёмки #56): «Сохранить?» — сразу по нажатию, до
+            // диалога выбора файла (было — после: файл выбирался, потом
+            // отменялся вместе с действием)
+            if (!confirmUnsavedRecording()) return
             val dlg = FileDialog(null as Frame?, Strings.loadTitle, FileDialog.LOAD)
             lastWavDir?.let { dlg.directory = it }
             dlg.isVisible = true
@@ -402,7 +485,11 @@ fun App() {
         fun onRecClick() {
             when (recPhase) {
                 RecPhase.Idle -> {
-                    error = null; recPhase = RecPhase.Countdown; recCountdown = 3
+                    // Билд #56 (п. «а» приёмки #55): перед новой записью —
+                    // «Сохранить?», если прежняя запись не сохранена в файл
+                    // (успех новой записи затрёт rec); отказ — действие отменено
+                    if (!confirmUnsavedRecording()) return
+                    error = null; recPhase = RecPhase.Countdown; recCountdown = 1
                     // Билд #44 (замечание 3а приёмки #43): имя — при нажатии
                     // «Запись» и только если имя отсутствует (есть данные —
                     // имя не менять; после успеха записи тоже не трогать).
@@ -411,7 +498,7 @@ fun App() {
                     if (recName.isNullOrBlank()) recName = autoRecName()
                     // Прослушка записи умолкает: её звук попал бы в микрофон
                     WavPlayer.stop(); recPlaying = false
-                    Log.d("rec", "клик: Idle → Countdown (отсчёт 3)")
+                    Log.d("rec", "клик: Idle → Countdown (отсчёт 1..0)")
                 }
                 RecPhase.Countdown -> {
                     recPhase = RecPhase.Idle
@@ -430,29 +517,7 @@ fun App() {
             }
         }
 
-        fun saveRecording() {
-            val r = rec ?: return
-            val chooser = JFileChooser(lastWavDir ?: System.getProperty("user.home"))
-            chooser.dialogTitle = Strings.saveRecTitle
-            chooser.isAcceptAllFileFilterUsed = false
-            chooser.fileFilter = FileNameExtensionFilter(".wav", "wav")
-            // Билд #45: имя могло быть стёрто в поле (recName = "") — пустое
-            // имя не подставлять в диалог (File("") бессмысленен)
-            chooser.selectedFile = File(recName?.takeIf { it.isNotBlank() } ?: "rec.wav")
-            if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) return
-            var f = chooser.selectedFile
-            if (!f.name.lowercase(Locale.ROOT).endsWith(".wav")) f = File(f.parentFile, f.name + ".wav")
-            lastWavDir = f.parentFile?.path
-            try {
-                writeWavMono(f, r.pcm, r.sr)
-                recSaved = true
-                savePrefs()
-            } catch (e: Exception) {
-                error = e.message ?: e.toString()
-            }
-        }
-
-        // Р14: отсчёт 3..2..1 — отдельным эффектом от захвата (билд #41:
+        // Р14: отсчёт 2 с — отдельным эффектом от захвата (билд #41:
         // в #40 смена recPhase на Recording ВНУТРИ эффекта записи
         // перезапускала LaunchedEffect(recPhase) — Compose отменял корутину
         // на ближайшей приостановке (withContext): захват не стартовал
@@ -461,8 +526,10 @@ fun App() {
         // действием; смена фазы нажатием отменяет отсчёт.
         LaunchedEffect(recPhase) {
             if (recPhase != RecPhase.Countdown) return@LaunchedEffect
-            Log.d("rec", "отсчёт: 3..2..1")
-            for (n in 3 downTo 1) {
+            Log.d("rec", "отсчёт: 1..0 (2 с)")
+            // Билд #56 (п. «а» приёмки #55): −0:01..−0:00 вместо −0:03..−0:01
+            // (отсчёт 2 с), дальше запись стартует с 0:00
+            for (n in 1 downTo 0) {
                 recCountdown = n
                 delay(1000)
                 if (recPhase != RecPhase.Countdown) {
@@ -518,7 +585,7 @@ fun App() {
         // Таймер записи (билд #40): секунды записи вверх от 0:00 (текст —
         // из recPhase/recCountdown/recElapsed); автостоп на 60-й секунде
         // (лимит в record() остаётся страховкой). Запись стартует при
-        // показе «0:00» — сразу после отсчёта −0:03..−0:01.
+        // показе «0:00» — сразу после отсчёта −0:01..−0:00 (билд #56).
         LaunchedEffect(recPhase) {
             if (recPhase != RecPhase.Recording) return@LaunchedEffect
             recElapsed = 0
@@ -892,7 +959,8 @@ fun App() {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     RecButton(recPhase, recCountdown, ::onRecClick, enabled = !busy)
-                    // Таймер (билд #40): отсчёт −0:03..−0:01 до старта, при
+                    // Таймер (билд #40): отсчёт −0:01..−0:00 до старта (2 с,
+                    // билд #56), при
                     // записи 0:00..1:00 вверх; при воспроизведении (п.5а
                     // приёмки #43) — позиция от начала (wav или midi);
                     // в покое — длительность источника: записи, а без неё —
@@ -1213,7 +1281,12 @@ fun App() {
                                         SpectrogramView(s, tScale, playPosSec = playPosSec,
                                             gamma = gamma, invert = !darkTheme,
                                             holdSpec = sRaw.takeIf { it !== s },
-                                            holdLabel = Strings.rawBadge)
+                                            holdLabel = Strings.rawBadge,
+                                            // Граница «конец нот» (билд #56, OQ-25):
+                                            // по нотам текущей версии; без версии —
+                                            // метки нет
+                                            notesEndSec = v?.notes?.maxOfOrNull { it.endSec }?.toFloat()
+                                                ?: -1f)
                                     specBusy -> Text(Strings.specComputing)
                                     else -> Text(Strings.noResults)
                                 }
@@ -1793,20 +1866,42 @@ fun App() {
 @OptIn(ExperimentalResourceApi::class)
 private suspend fun readSampleBytes(path: String): ByteArray = Res.readBytes(path)
 
+/** Открыть [uri] во внешней программе ОС: при доступном Desktop API —
+ *  [action] (BROWSE для сайтов, OPEN для файлов), при его отсутствии или
+ *  сбое — `xdg-open` (билд #57, п.1 приёмки #56: в WSL Desktop API нет, а
+ *  xdg-open есть). [ProcessBuilder.start] не ждёт процесс — GUI не
+ *  блокируется. Возвращает текст ошибки или null (запущено). */
+private fun openExternal(uri: URI, action: Desktop.Action): String? {
+    try {
+        // Порядок важен: getDesktop() бросает, если Desktop API не поддержан
+        if (Desktop.isDesktopSupported()) {
+            val d = Desktop.getDesktop()
+            if (d.isSupported(action)) {
+                if (action == Desktop.Action.BROWSE) d.browse(uri) else d.open(File(uri))
+                return null
+            }
+        }
+    } catch (_: Exception) {
+        // сбой Desktop API (нет браузера/приложения) — пробуем xdg-open
+    }
+    return try {
+        ProcessBuilder("xdg-open", uri.toString()).start()
+        null
+    } catch (e: Exception) {
+        e.message ?: e.toString()
+    }
+}
+
 /** Play [midi] in the OS application associated with .mid (Desktop API /
  *  xdg-open): a temp file under ~/.v2m is written and opened. The file is
  *  overwritten on each call and never auto-deleted — an external app may
  *  still be reading it (no end-of-playback signal exists on this path).
  *  Returns null on success or an error text. */
 private fun playExternally(midi: ByteArray): String? = try {
-    if (!Desktop.isDesktopSupported()) {
-        throw IllegalStateException("в этом окружении нет Desktop API")
-    }
     val dir = File(System.getProperty("user.home"), ".v2m").apply { mkdirs() }
     val f = File(dir, "v2m-listen.mid")
     f.writeBytes(midi)
-    Desktop.getDesktop().open(f)
-    null
+    openExternal(f.toURI(), Desktop.Action.OPEN)?.let { Strings.playFailed.format(it) }
 } catch (e: Exception) {
     Strings.playFailed.format(e.message)
 }
@@ -2047,16 +2142,12 @@ private fun KeySelector(keySel: Int, onSelect: (Int) -> Unit, onPlayTriad: () ->
 /** Инфо-диалоги пунктов меню (замечание А.М. 2026-09-06, 7). */
 private enum class InfoDlg { About, Privacy, Oss }
 
-/** Открыть сайт разработчика в браузере ОС (пункт «О программе»). */
+/** Открыть сайт разработчика в браузере ОС (пункт «О программе»).
+ *  Билд #57 (п.1 приёмки #56): при отсутствии Desktop API — xdg-open;
+ *  сбой — best-effort, пишется в журнал. */
 private fun openSite() {
-    try {
-        if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Action.BROWSE)) {
-            throw IllegalStateException("в этом окружении нет Desktop API")
-        }
-        Desktop.getDesktop().browse(URI("https://attplus.in"))
-    } catch (e: Exception) {
-        e.printStackTrace() // best-effort: браузер может отсутствовать
-    }
+    openExternal(URI("https://attplus.in"), Desktop.Action.BROWSE)
+        ?.let { Log.d("site", "открыть attplus.in не удалось: $it") }
 }
 
 /** Строка меню без чекбокса — пункт, открывающий инфо-диалог (7). */
@@ -2160,16 +2251,17 @@ private fun EditNotePanel(
 /** Фазы кнопки записи (Р14): Idle → Countdown → Recording (клик в обратную). */
 enum class RecPhase { Idle, Countdown, Recording }
 
-/** Кнопка записи Р14: красный кружок. Отсчёт −0:03..0:00 — в поле таймера
- *  справа (билд #40; клик во время отсчёта отменяет старт); при записи
- *  кружок мигает (клик — стоп). */
+/** Кнопка записи Р14: красный кружок. Отсчёт −0:01..−0:00 (2 с, билд #56) —
+ *  в поле таймера справа (билд #40; клик во время отсчёта отменяет старт);
+ *  при записи кружок мигает (клик — стоп). */
 @Composable
 private fun RecButton(phase: RecPhase, countdown: Int, onClick: () -> Unit, enabled: Boolean) {
     val blink = rememberInfiniteTransition()
         .animateFloat(1f, 0.25f, infiniteRepeatable(tween(400), RepeatMode.Reverse))
     val cd = when (phase) {
         RecPhase.Idle -> Strings.recCd
-        RecPhase.Countdown -> Strings.recCountdownCd.format(countdown)
+        // «через 0…» на последней секунде отсчёта — без числа (билд #56)
+        RecPhase.Countdown -> if (countdown > 0) Strings.recCountdownCd.format(countdown) else Strings.recStartCd
         RecPhase.Recording -> Strings.recStopCd
     }
     Button(onClick = onClick, enabled = enabled,
