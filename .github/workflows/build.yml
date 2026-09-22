@@ -18,7 +18,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        submodules: false 
+        submodules: false
 
     - name: Set up JDK
       uses: actions/setup-java@v5
@@ -41,16 +41,21 @@ jobs:
       working-directory: app
       run: .\gradlew.bat :desktopApp:packageDistributionForCurrentOS
 
+    # Загрузка Linux-дистрибутива из точной папки, которую вы указали
     - name: Upload Linux Artifact
       if: runner.os == 'Linux'
       uses: actions/upload-artifact@v4
       with:
         name: v2m-linux-x64-distributive
-        path: app/desktopApp/build/compose/binaries/main/app/
+        # Символ * подставит любую версию (например, 1.0.0 или 1.0.1)
+        path: dist/out/v2m-linux-x64-*/
+        if-no-files-found: error
 
+    # Загрузка Windows-дистрибутива из аналогичной папки
     - name: Upload Windows Artifact
       if: runner.os == 'Windows'
       uses: actions/upload-artifact@v4
       with:
         name: v2m-windows-x64-distributive
-        path: app/desktopApp/build/compose/binaries/main/app/
+        path: dist/out/v2m-windows-x64-*/
+        if-no-files-found: error
