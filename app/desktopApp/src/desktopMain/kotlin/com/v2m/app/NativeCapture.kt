@@ -1,7 +1,6 @@
 package com.v2m.app
 
 import java.util.Locale
-import kotlin.math.sqrt
 
 /** Захват микрофона через ALSA (JNI → libv2m.so), замена javax.sound
  *  (билд #43). Нативный слой гарантирует ровно targetRate Гц / 16 бит / моно —
@@ -89,16 +88,6 @@ class NativeCapture(private val targetRate: Int = 22050) : AudioCapture {
             for (s in b) pcm[off++] = s / 32768f
         }
         return AudioCapture.Result(pcm, targetRate)
-    }
-
-    /** RMS блока S16_LE (0..1) для полосы уровня — формула rmsBlock 16 бит. */
-    private fun rmsShorts(s: ShortArray): Float {
-        var sum = 0.0
-        for (v in s) {
-            val x = v / 32768.0
-            sum += x * x
-        }
-        return sqrt(sum / s.size).toFloat()
     }
 
     /** Проба JNI-слоя захвата (самотест Main.selfTest): ждём "alsa-ok…". */

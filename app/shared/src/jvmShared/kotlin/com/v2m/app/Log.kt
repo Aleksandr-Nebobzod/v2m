@@ -22,7 +22,7 @@ object Log {
     /** false — только перед release-сборкой (см. док объекта). */
     const val DEBUG = true
 
-    private val file = File(System.getProperty("user.home"), ".v2m" + File.separator + "v2m-debug.log")
+    private val file: File get() = File(AppData.dir, "v2m-debug.log")
     private val stamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.ROOT)
 
     /** Разовый перехват System.out/System.err (tee: файл + консоль). */

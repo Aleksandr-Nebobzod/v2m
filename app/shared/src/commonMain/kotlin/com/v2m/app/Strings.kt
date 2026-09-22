@@ -4,6 +4,9 @@ package com.v2m.app
  *  If multi-language support is needed later, move to Compose Multiplatform
  *  resources (composeResources/values/strings.xml + stringResource) — the
  *  call sites stay the same, only the source of the text changes. */
+/** Long-press help: English name (bold), purpose (plain), examples (italic). */
+data class ParamHelp(val english: String, val purpose: String, val examples: String)
+
 object Strings {
     // Buttons and file picker
     const val wavButton = "Выбрать WAV"
@@ -251,7 +254,9 @@ object Strings {
     const val authorNone = "не указан"
     const val authorDlgTitle = "Автор файла признаков"
     const val authorDlgText = "Имя попадёт в «meta.author» файла признаков. Пусто — поле не указывается."
-    const val dlgOpenSite = "attplus.in ↗"
+    const val dlgOpenSite = "attplus.in/v2m ↗"
+    // Адрес страницы приложения (билд #58, приёмка #57 А.М.: «http://attplus.in/v2m (без ssl)»).
+    const val dlgOpenSiteUrl = "http://attplus.in/v2m"
     const val aboutText = "Транскрипция аудио в MIDI (C++-порт Basic Pitch, Kotlin/Compose)"
     const val aboutDev = "Разработчик:"
     const val privacyText = "Программа не собирает и не раскрывает никаких персональных данных. " +

@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "v2m"
-include(":shared", ":desktopApp")
+include(":shared", ":desktopApp", ":androidApp")

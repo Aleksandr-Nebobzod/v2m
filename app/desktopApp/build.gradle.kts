@@ -20,10 +20,8 @@ kotlin {
     }
 }
 
-compose.resources {
-    packageOfResClass = "com.v2m.app.resources"
-    generateResClass = always
-}
+// Ресурсы и класс Res (package com.v2m.app.resources) — в :shared (этап 4а
+// плана docs/260921_android_plan.md); здесь остаётся только доступ к ним.
 
 compose.desktop {
     application {

@@ -48,6 +48,7 @@ import com.v2m.app.resources.metronome
 import com.v2m.app.resources.music_note_2
 import com.v2m.app.resources.play
 import com.v2m.app.resources.stop
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -58,13 +59,6 @@ import org.jetbrains.compose.resources.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.v2m.app.resources.menu
-import java.awt.Desktop
-import java.awt.FileDialog
-import java.awt.Frame
-import java.net.URI
-import javax.swing.JFileChooser
-import javax.swing.JOptionPane
-import javax.swing.filechooser.FileNameExtensionFilter
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.math.exp
@@ -113,9 +107,6 @@ private fun neutralMelody(p: V2mEngine.Params): V2mEngine.Params = p.copy(
     minBendBins = 0, globalShift = 0f, modeSnap = 0f, smoothingWindow = 1,
     pitchMedianWindow = 1,
 )
-
-/** Long-press help: English name (bold), purpose (plain), examples (italic). */
-data class ParamHelp(val english: String, val purpose: String, val examples: String)
 
 /** Label with long-press popup (English bold, purpose plain, examples italic). */
 @OptIn(ExperimentalFoundationApi::class)
@@ -169,7 +160,10 @@ internal fun App(closeGuard: CloseGuard) {
     var darkTheme by remember { mutableStateOf(prefs.darkTheme) } // ☰-меню «Вид»: тёмная тема
     MaterialTheme(colors = if (darkTheme) darkColors() else lightColors()) {
         var params by remember { mutableStateOf(prefs.params) }
-        var wavFile by remember { mutableStateOf<File?>(null) }
+        // Этап 4б плана Android: выбранный файл хранится содержимым и именем —
+        // у выбранного документа на Android нет пути (SAF отдаёт содержимое).
+        var wavBytes by remember { mutableStateOf<ByteArray?>(null) }
+        var wavName by remember { mutableStateOf<String?>(null) }
         // Длительность загруженного внешнего файла (из заголовка WAV) —
         // таймер в покое, когда записи нет (замечание «б» приёмки #44)
         var wavDurSec by remember { mutableStateOf<Int?>(null) }
@@ -178,6 +172,12 @@ internal fun App(closeGuard: CloseGuard) {
         var rec by remember { mutableStateOf<AudioCapture.Result?>(null) }
         var recName by remember { mutableStateOf<String?>(null) } // автоимя «rec_…wav»
         var recSaved by remember { mutableStateOf(false) }
+        // Этап 4б: подтверждения — Compose-диалоги (JOptionPane недоступен вне
+        // JVM). Схема асинхронная: действие продолжается колбэком после ответа.
+        var askSave by remember { mutableStateOf(false) } // открыт диалог «Сохранить?»
+        var askSaveNext by remember { mutableStateOf<(() -> Unit)?>(null) } // что делать после ответа
+        var askOverwriteName by remember { mutableStateOf<String?>(null) } // имя в диалоге «Заменить?»
+        var overwriteAnswer by remember { mutableStateOf<CompletableDeferred<Overwrite>?>(null) }
         var recPhase by remember { mutableStateOf(RecPhase.Idle) }
         var recCountdown by remember { mutableStateOf(3) } // цифра отсчёта (таймер «−0:0N»)
         var recElapsed by remember { mutableStateOf(0) } // секунды записи (таймер «m:ss», билд #40)
@@ -259,7 +259,7 @@ internal fun App(closeGuard: CloseGuard) {
         // ~/.v2m рядом с prefs.properties (см. PresetStore), единый источник
         // имен фабричных — код (FACTORY_PRESETS)
         val presetStore = remember {
-            PresetStore(File(System.getProperty("user.home"), ".v2m" + File.separator + "presets.properties"))
+            PresetStore(File(AppData.dir, "presets.properties"))
         }
         val scope = rememberCoroutineScope()
 
@@ -337,11 +337,11 @@ internal fun App(closeGuard: CloseGuard) {
         // Громкость MIDI — в плеер (билд #51): при старте (значение из prefs)
         // и на каждое движение слайдера; setVolume применяет CC7 и к уже
         // звучащему воспроизведению, поэтому перезапуск не нужен
-        LaunchedEffect(midiVolume) { MidiPlayer.setVolume(midiVolume) }
+        LaunchedEffect(midiVolume) { Platform.midi.setVolume(midiVolume) }
 
         // Громкость WAV — в плеер записи (билд #52, п.3 приёмки #51): значение
         // читается писателем на каждом блоке, перезапуск не нужен
-        LaunchedEffect(wavVolume) { WavPlayer.volume = wavVolume / WAV_VOLUME_DIVISOR }
+        LaunchedEffect(wavVolume) { Platform.wav.volume = wavVolume / WAV_VOLUME_DIVISOR }
 
         /** Спектрограмма материала (билд #48): сырой вход ([pcm], [sr]) —
          *  выбранный файл или законченная запись. Считается сразу при
@@ -362,82 +362,85 @@ internal fun App(closeGuard: CloseGuard) {
             }
         }
 
-        /** Сохранение записи в WAV (диалог JFileChooser). Успех — [recSaved];
-         *  отмена диалога или сбой — запись остаётся несохранённой.
+        /** Сохранение записи в WAV (этап 4б: место выбирает платформа —
+         *  desktop JFileChooser, Android SAF). Успех — [recSaved]; отмена или
+         *  сбой — запись остаётся несохранённой.
          *  Билд #57 (п.2б приёмки #56): существующий файл не перезаписывается
          *  молча — подтверждение «Заменить?» («Другое имя» возвращает к
-         *  диалогу выбора; диалог создаётся один раз до цикла, чтобы
-         *  навигация по каталогам не терялась).
+         *  диалогу выбора). [onDone] — продолжение действия, ждавшего
+         *  сохранения (см. [askUnsaved]); вызывается только после успеха.
          *  Объявлена до [chooseWav] и [onRecClick]: локальные функции Kotlin
-         *  не имеют forward-ссылок, а оба действия спрашивают о несохранённой
-         *  записи ([confirmUnsavedRecording]). */
-        fun saveRecording() {
+         *  не имеют forward-ссылок. */
+        /** Диалог «Заменить?» — приостанавливает вызывающую корутину до ответа
+         *  (этап 4б: Compose AlertDialog вместо JOptionPane). Объявлена до
+         *  [saveRecording]: у локальных функций Kotlin нет forward-ссылок. */
+        suspend fun askOverwrite(name: String): Overwrite {
+            val answer = CompletableDeferred<Overwrite>()
+            askOverwriteName = name
+            overwriteAnswer = answer
+            return try {
+                answer.await()
+            } finally {
+                askOverwriteName = null
+                overwriteAnswer = null
+            }
+        }
+
+        fun saveRecording(onDone: () -> Unit = {}) {
             val r = rec ?: return
-            val chooser = JFileChooser(lastWavDir ?: System.getProperty("user.home"))
-            chooser.dialogTitle = Strings.saveRecTitle
-            chooser.isAcceptAllFileFilterUsed = false
-            chooser.fileFilter = FileNameExtensionFilter(".wav", "wav")
             // Билд #45: имя могло быть стёрто в поле (recName = "") — пустое
-            // имя не подставлять в диалог (File("") бессмысленен)
-            chooser.selectedFile = File(recName?.takeIf { it.isNotBlank() } ?: "rec.wav")
-            while (true) {
-                if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) return
-                var f = chooser.selectedFile
-                if (!f.name.lowercase(Locale.ROOT).endsWith(".wav")) f = File(f.parentFile, f.name + ".wav")
-                // Билд #57 (п.2б приёмки #56): дописанное «.wav» не видел
-                // встроенный диалог — существующий файл подтверждается здесь
-                if (f.exists()) {
-                    val opt = JOptionPane.showOptionDialog(
-                        null, Strings.recOverwriteAsk.format(f.name), Strings.recOverwriteTitle,
-                        JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE, null,
-                        arrayOf(Strings.recOverwriteReplace, Strings.recOverwriteNewName, Strings.recOverwriteCancel),
-                        Strings.recOverwriteReplace,
-                    )
-                    Log.d("rec", "перезапись «${f.name}»: ответ $opt")
-                    if (opt == 1 || opt == JOptionPane.CLOSED_OPTION) continue // «Другое имя» → снова диалог
-                    if (opt != 0) return // «Отмена» → сохранение отменено
-                }
-                lastWavDir = f.parentFile?.path
-                try {
-                    writeWavMono(f, r.pcm, r.sr)
+            // имя не подставлять в диалог
+            val suggested = recName?.takeIf { it.isNotBlank() } ?: "rec.wav"
+            scope.launch {
+                var startKey = lastWavDir
+                while (true) {
+                    val target = Platform.files.chooseSaveTarget(
+                        Strings.saveRecTitle, suggested, startKey,
+                        listOf(SaveFormat("wav", ".wav", "wav")),
+                    ) ?: return@launch
+                    if (target.exists) {
+                        when (askOverwrite(target.name)) {
+                            Overwrite.OtherName -> { startKey = target.dirKey; continue }
+                            Overwrite.Cancel -> return@launch
+                            Overwrite.Replace -> Unit
+                        }
+                    }
+                    lastWavDir = target.dirKey
+                    val fail = target.write(encodeWavMono(r.pcm, r.sr))
+                    if (fail != null) {
+                        error = fail
+                        return@launch
+                    }
                     recSaved = true
                     savePrefs()
-                } catch (e: Exception) {
-                    error = e.message ?: e.toString()
+                    onDone()
+                    return@launch
                 }
-                return
             }
         }
 
         /** Билд #56 (п. «б» приёмки #55): перед действием, теряющим
-         *  несохранённую запись («Запись», «Выбрать WAV»), — диалог
-         *  «Сохранить?». true — продолжать действие: сохранять нечего, запись
-         *  уже сохранена, либо пользователь выбрал «Не сохранять».
-         *  «Сохранить» с отменённым диалогом файла отменяет и само действие
-         *  (материал не теряется молча); «Отмена» — отмена действия. */
-        fun confirmUnsavedRecording(): Boolean {
-            if (rec == null || recSaved) return true
-            val options = arrayOf(Strings.recUnsavedSave, Strings.recUnsavedSkip, Strings.recUnsavedCancel)
-            val choice = JOptionPane.showOptionDialog(
-                null, Strings.recUnsavedAsk, Strings.recUnsavedTitle,
-                JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null,
-                options, options[0],
-            )
-            Log.d("rec", "диалог «Сохранить?»: ответ $choice")
-            return when (choice) {
-                0 -> { saveRecording(); recSaved }
-                1 -> true
-                else -> false
+         *  несохранённую запись («Запись», «Выбрать WAV», закрытие окна), —
+         *  вопрос «Сохранить?». [onProceed] вызывается сразу, если терять
+         *  нечего, иначе — после ответа («Сохранить» с успешным сохранением
+         *  либо «Не сохранять»); «Отмена» и отменённый диалог файла действие
+         *  не продолжают — материал не теряется молча. */
+        fun askUnsaved(onProceed: () -> Unit) {
+            if (rec == null || recSaved) {
+                onProceed()
+                return
             }
+            askSaveNext = onProceed
+            askSave = true
         }
 
         // Билд #57 (п.2в приёмки #56): закрытие окна спрашивает о несохранённой
-        // записи тем же диалогом «Сохранить?» — колбэк забирает Main.kt
-        // (onCloseRequest). Стоит после confirmUnsavedRecording: у локальных
-        // функций Kotlin нет forward-ссылок. Лямбда захватывает MutableState,
-        // поэтому читает актуальные rec/recSaved в момент закрытия.
+        // записи тем же вопросом «Сохранить?» — колбэк забирает Main.kt
+        // (onCloseRequest). Стоит после askUnsaved: у локальных функций Kotlin
+        // нет forward-ссылок. Лямбда захватывает MutableState, поэтому читает
+        // актуальные rec/recSaved в момент закрытия.
         DisposableEffect(closeGuard) {
-            closeGuard.confirm = { confirmUnsavedRecording() }
+            closeGuard.confirm = { onProceed -> askUnsaved(onProceed) }
             onDispose { closeGuard.confirm = null }
         }
 
@@ -445,26 +448,27 @@ internal fun App(closeGuard: CloseGuard) {
             // Билд #57 (п.2а приёмки #56): «Сохранить?» — сразу по нажатию, до
             // диалога выбора файла (было — после: файл выбирался, потом
             // отменялся вместе с действием)
-            if (!confirmUnsavedRecording()) return
-            val dlg = FileDialog(null as Frame?, Strings.loadTitle, FileDialog.LOAD)
-            lastWavDir?.let { dlg.directory = it }
-            dlg.isVisible = true
-            val f = dlg.files.firstOrNull() ?: return
-            wavFile = f
-            wavDurSec = wavDurationSec(f) // для таймера в покое (замечание «б» приёмки #44)
-            rec = null; recName = null; recSaved = false // явный выбор файла отменяет непосохранённую запись
-            WavPlayer.stop(); recPlaying = false // и её воспроизведение (п.1 приёмки #43)
-            error = null
-            lastWavDir = dlg.directory
-            // Спектрограмма нового материала (билд #48) — сразу, без прогона
-            inputSpec = null
-            scope.launch {
-                val (pcm, sr) = withContext(Dispatchers.IO) {
-                    runCatching { readWavMono(f) }.getOrNull()
-                } ?: return@launch
-                computeSpectrogram(pcm, sr) { wavFile == f && rec == null }
+            askUnsaved {
+                scope.launch {
+                    val picked = Platform.files.pickWav(Strings.loadTitle, lastWavDir)
+                        ?: return@launch
+                    val bytes = picked.bytes
+                    wavBytes = bytes
+                    wavName = picked.name
+                    wavDurSec = wavDurationSec(bytes) // для таймера в покое (замечание «б» приёмки #44)
+                    rec = null; recName = null; recSaved = false // явный выбор файла отменяет непосохранённую запись
+                    Platform.wav.stop(); recPlaying = false // и её воспроизведение (п.1 приёмки #43)
+                    error = null
+                    lastWavDir = picked.dirKey
+                    savePrefs()
+                    // Спектрограмма нового материала (билд #48) — сразу, без прогона
+                    inputSpec = null
+                    val (pcm, sr) = withContext(Dispatchers.IO) {
+                        runCatching { readWavMono(bytes) }.getOrNull()
+                    } ?: return@launch
+                    computeSpectrogram(pcm, sr) { wavBytes === bytes && rec == null }
+                }
             }
-            savePrefs()
         }
 
         // Автоимя записи — присваивается в onRecClick при нажатии «Запись»
@@ -488,17 +492,18 @@ internal fun App(closeGuard: CloseGuard) {
                     // Билд #56 (п. «а» приёмки #55): перед новой записью —
                     // «Сохранить?», если прежняя запись не сохранена в файл
                     // (успех новой записи затрёт rec); отказ — действие отменено
-                    if (!confirmUnsavedRecording()) return
-                    error = null; recPhase = RecPhase.Countdown; recCountdown = 1
-                    // Билд #44 (замечание 3а приёмки #43): имя — при нажатии
-                    // «Запись» и только если имя отсутствует (есть данные —
-                    // имя не менять; после успеха записи тоже не трогать).
-                    // Билд #45 (замечание «г»): поле стало изменяемым — стёртое
-                    // в нём имя (пустая строка) тоже заменяется автоименем.
-                    if (recName.isNullOrBlank()) recName = autoRecName()
-                    // Прослушка записи умолкает: её звук попал бы в микрофон
-                    WavPlayer.stop(); recPlaying = false
-                    Log.d("rec", "клик: Idle → Countdown (отсчёт 1..0)")
+                    askUnsaved {
+                        error = null; recPhase = RecPhase.Countdown; recCountdown = 1
+                        // Билд #44 (замечание 3а приёмки #43): имя — при нажатии
+                        // «Запись» и только если имя отсутствует (есть данные —
+                        // имя не менять; после успеха записи тоже не трогать).
+                        // Билд #45 (замечание «г»): поле стало изменяемым — стёртое
+                        // в нём имя (пустая строка) тоже заменяется автоименем.
+                        if (recName.isNullOrBlank()) recName = autoRecName()
+                        // Прослушка записи умолкает: её звук попал бы в микрофон
+                        Platform.wav.stop(); recPlaying = false
+                        Log.d("rec", "клик: Idle → Countdown (отсчёт 1..0)")
+                    }
                 }
                 RecPhase.Countdown -> {
                     recPhase = RecPhase.Idle
@@ -547,7 +552,7 @@ internal fun App(closeGuard: CloseGuard) {
         // (сброс фазы кликом) finally закрывает линию.
         LaunchedEffect(recPhase) {
             if (recPhase != RecPhase.Recording) return@LaunchedEffect
-            val mic = NativeCapture()
+            val mic = Platform.newCapture()
             try {
                 val problem = withContext(Dispatchers.IO) { mic.open() }
                 if (problem != null) {
@@ -607,7 +612,7 @@ internal fun App(closeGuard: CloseGuard) {
                 return@LaunchedEffect
             }
             while (recPlaying || playing) {
-                playPosSec = (if (recPlaying) WavPlayer.positionSec else MidiPlayer.positionSec).toFloat()
+                playPosSec = (if (recPlaying) Platform.wav.positionSec else Platform.midi.positionSec).toFloat()
                 delay(100)
             }
             playPosSec = -1f
@@ -647,9 +652,9 @@ internal fun App(closeGuard: CloseGuard) {
             // Вход (Р14): свежая запись с микрофона — в приоритете над файлом;
             // ядро принимает PCM из памяти, файл не участвует.
             val (pcm, sr) = rec?.let { it.pcm to it.sr }
-                ?: wavFile?.let { readWavMono(it) }
+                ?: wavBytes?.let { readWavMono(it) }
                 ?: return
-            val inputName = recName ?: wavFile?.name ?: return
+            val inputName = recName ?: wavName ?: return
             busy = true
             error = null
             // Инструмент «Экспорта» — единый источник (в отчёт/JSON); сглаживание
@@ -739,19 +744,19 @@ internal fun App(closeGuard: CloseGuard) {
             error = null
             // Взаимоисключение с ▶ записи (п.1 приёмки #43): версия и запись
             // одновременно не звучат
-            WavPlayer.stop(); recPlaying = false
+            Platform.wav.stop(); recPlaying = false
             val midi = exportMidi(v.midi, effectiveKey(v.report), v.muted)
             if (listenExternal) { // во внешней программе: открыть файл; остановить встроенный плеер, если звучит
-                MidiPlayer.stop()
+                Platform.midi.stop()
                 playing = false
                 playExternally(midi)?.let { error = it }
                 return
             }
             if (playing) { // повторное нажатие во время звучания — остановка
-                MidiPlayer.stop()
+                Platform.midi.stop()
                 return
             }
-            val err = MidiPlayer.play(midi) { playing = false }
+            val err = Platform.midi.play(midi) { playing = false }
             if (err == null) playing = true else error = err
         }
 
@@ -763,22 +768,22 @@ internal fun App(closeGuard: CloseGuard) {
         fun recListen() {
             error = null
             if (recPlaying) {
-                WavPlayer.stop()
+                Platform.wav.stop()
                 return
             }
             val ps = rec?.let { it.pcm to it.sr }
-                ?: wavFile?.let { f ->
+                ?: wavBytes?.let { b ->
                     try {
-                        readWavMono(f)
+                        readWavMono(b)
                     } catch (e: Exception) {
                         error = e.message ?: e.toString()
                         return
                     }
                 }
                 ?: return
-            MidiPlayer.stop() // версия не звучит поверх записи
+            Platform.midi.stop() // версия не звучит поверх записи
             playing = false
-            val err = WavPlayer.play(ps.first, ps.second) { recPlaying = false }
+            val err = Platform.wav.play(ps.first, ps.second) { recPlaying = false }
             if (err == null) recPlaying = true else error = err
         }
 
@@ -802,7 +807,7 @@ internal fun App(closeGuard: CloseGuard) {
                     key != null -> transposeSample(midi, key)
                     else -> midi
                 }
-                MidiPlayer.play(prepared)?.let { error = it }
+                Platform.midi.play(prepared)?.let { error = it }
             }
         }
 
@@ -821,7 +826,7 @@ internal fun App(closeGuard: CloseGuard) {
         // «Тонов» звучит с её бендом, звук правки [<]/[>] — чистый тон (0).
         fun playNoteTone(pitch: Int, velocity: Int, cents: Float = 0f) {
             error = null
-            val err = MidiPlayer.play(noteToneMidi(pitch, velocity, instrument - 1, cents))
+            val err = Platform.midi.play(noteToneMidi(pitch, velocity, instrument - 1, cents))
             // Журнал (билд #33): что произошло по клику — тон, инструмент
             // экспорта (0..127 GM) и ошибка плеера, если есть.
             if (Log.DEBUG) {
@@ -830,66 +835,67 @@ internal fun App(closeGuard: CloseGuard) {
             err?.let { error = it }
         }
 
-        /** Кнопка «Экспорт» низа (п.6; билд #36, п.3; билд #38): системный
-         *  диалог сохранения (JFileChooser) со списком допустимых форматов —
-         *  .mid / .mid + признаки / .musicxml / .abc (тип выбирает
-         *  пользователь в диалоге — фильтры, замечание «г»: на самой кнопке
-         *  формата нет; выбранный фильтр запоминается в prefs как exportFmt).
+        /** Кнопка «Экспорт» низа (п.6; билд #36, п.3; билд #38): диалог
+         *  сохранения со списком допустимых форматов — .mid / .mid + признаки
+         *  / .musicxml / .abc (тип выбирает пользователь в диалоге, замечание
+         *  «г»: на самой кнопке формата нет; выбранный формат запоминается в
+         *  prefs как exportFmt). Этап 4б: диалог и запись — через
+         *  [Platform.files] (desktop JFileChooser, Android SAF).
          *  «mid+ctx» (замечание «в»): .mid и рядом файл кадровых признаков
-         *  <имя>.frames.json (сводка в прогоне всегда, файл — по выбору).
+         *  <имя>.frames.json (сводка в прогоне всегда, файл — по выбору;
+         *  на Android «рядом» недоступно — [SaveTarget.sibling]).
          *  Заглушенные ноты в экспорт не попадают (normalizeMidi с
          *  [v.muted]; .abc — тем же фильтром). */
         fun exportVersion(v: Version) {
             val key = effectiveKey(v.report)
-            val chooser = JFileChooser((if (exportFmt == "musicxml") lastXmlDir else lastMidiDir)
-                ?: System.getProperty("user.home"))
-            chooser.dialogTitle = Strings.exportDialogTitle
-            chooser.isAcceptAllFileFilterUsed = false
-            val filters = Preferences.EXPORT_FORMATS.map { fmt ->
-                FileNameExtensionFilter(Strings.EXPORT_FMT_NAMES[fmt] ?: fmt,
-                    Preferences.exportExt(fmt)) to fmt
+            val formats = Preferences.EXPORT_FORMATS.map { fmt ->
+                SaveFormat(fmt, Strings.EXPORT_FMT_NAMES[fmt] ?: fmt, Preferences.exportExt(fmt))
             }
-            filters.forEach { (f, _) -> chooser.addChoosableFileFilter(f) }
-            chooser.fileFilter = filters.firstOrNull { it.second == exportFmt }?.first ?: filters.first().first
-            chooser.selectedFile = File(wavFile?.nameWithoutExtension ?: "result")
-            if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) return
-            val fmt = filters.firstOrNull { chooser.fileFilter === it.first }?.second ?: "mid"
-            val file = chooser.selectedFile ?: return
-            // Без расширения в имени — дописать расширение выбранного типа
-            // («mid+ctx» пишет .mid; признаки — отдельным файлом рядом)
-            val path = if (file.name.contains('.')) file.absolutePath
-            else file.absolutePath + "." + Preferences.exportExt(fmt)
-            file.parentFile?.let { lastMidiDir = it.absolutePath; lastXmlDir = it.absolutePath }
-            exportFmt = fmt
-            savePrefs()
-            val ok = when (fmt) {
-                "mid", "mid+ctx" -> {
-                    val json = buildParamsJson(v.wavName, v.params, v.report, key)
-                    val mid = anacrusisMidi(exportMidi(v.midi, key, v.muted), anacrusis)
-                    File(path).writeBytes(midiWithMetaTrack(mid, json))
-                    // Кадровая сводка (билд #38) — рядом с сохраняемым .mid
-                    // только по типу «.mid + признаки»
-                    if (fmt == "mid+ctx") {
-                        v.framesJson?.let { fj ->
-                            val framesPath = path.removeSuffix(".mid") + ".frames.json"
-                            if (!runCatching { File(framesPath).writeText(fj) }.isSuccess) {
-                                error = Strings.saveFailed.format(framesPath)
+            val suggested = (wavName?.substringBeforeLast('.') ?: "result") + "." + Preferences.exportExt(exportFmt)
+            val startKey = if (exportFmt == "musicxml") lastXmlDir else lastMidiDir
+            scope.launch {
+                val target = Platform.files.chooseSaveTarget(
+                    Strings.exportDialogTitle, suggested, startKey, formats,
+                ) ?: return@launch
+                val fmt = target.format
+                lastMidiDir = target.dirKey
+                lastXmlDir = target.dirKey
+                exportFmt = fmt
+                savePrefs()
+                val name = target.name
+                val fail = when (fmt) {
+                    "mid", "mid+ctx" -> {
+                        val json = buildParamsJson(v.wavName, v.params, v.report, key)
+                        val mid = anacrusisMidi(exportMidi(v.midi, key, v.muted), anacrusis)
+                        val writeFail = target.write(midiWithMetaTrack(mid, json))
+                        // Кадровая сводка (билд #38) — рядом с сохраняемым .mid
+                        // только по типу «.mid + признаки»
+                        if (writeFail == null && fmt == "mid+ctx") {
+                            v.framesJson?.let { fj ->
+                                val frames = target.sibling(name.removeSuffix(".mid") + ".frames.json")
+                                if (frames == null || frames.write(fj.toByteArray()) != null) {
+                                    error = Strings.saveFailed.format(name.removeSuffix(".mid") + ".frames.json")
+                                }
                             }
                         }
+                        writeFail
                     }
-                    true
-                }
-                "musicxml" -> V2mEngine.midiToMusicXml(
-                    anacrusisMidi(exportMidi(v.midi, key, v.muted), anacrusis),
-                    path, clef, key?.fifths ?: 0, anacrusis)
-                "abc" -> {
-                    File(path).writeText(exportAbc(
+                    "musicxml" -> {
+                        // Ядро пишет MusicXML файлом по пути — платформа даёт
+                        // временный (desktop — каталог данных, Android — filesDir)
+                        val tmp = Platform.files.tempPath("v2m-export.musicxml")
+                        val ok = V2mEngine.midiToMusicXml(
+                            anacrusisMidi(exportMidi(v.midi, key, v.muted), anacrusis),
+                            tmp, clef, key?.fifths ?: 0, anacrusis)
+                        if (ok) target.write(File(tmp).readBytes()) else Strings.saveFailed.format(name)
+                    }
+                    "abc" -> target.write(exportAbc(
                         anacrusisMidi(exportMidi(v.midi, key, v.muted), anacrusis),
-                        v.wavName, key)); true
+                        v.wavName, key).toByteArray())
+                    else -> Strings.saveFailed.format(name)
                 }
-                else -> false
+                if (fail != null) error = Strings.saveFailed.format(name)
             }
-            if (!ok) error = Strings.saveFailed.format(path)
         }
 
         /** Панель правки «Тоны» (п.4): шаг [deltaPitch] от кнопок [<]/[>].
@@ -979,7 +985,7 @@ internal fun App(closeGuard: CloseGuard) {
                     // приёмки #44); повторное нажатие — стоп (иконка ▢)
                     val recPlayIcon = if (recPlaying) Res.drawable.stop else Res.drawable.play
                     OutlinedButton(onClick = ::recListen,
-                        enabled = (rec != null || wavFile != null) && !busy && recPhase == RecPhase.Idle,
+                        enabled = (rec != null || wavBytes != null) && !busy && recPhase == RecPhase.Idle,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
                         modifier = Modifier.height(CtrlHeight).semantics {
                             contentDescription =
@@ -1000,7 +1006,7 @@ internal fun App(closeGuard: CloseGuard) {
                     }
                     // TextField → InlineField (билд #46): placeholder показывает
                     // «нет файла», но пустую строку не навязывает — как у затакта
-                    InlineField(value = recName ?: wavFile?.name ?: "",
+                    InlineField(value = recName ?: wavName ?: "",
                         onValueChange = { recName = it },
                         modifier = Modifier.weight(1f),
                         placeholder = Strings.noFile)
@@ -1579,9 +1585,9 @@ internal fun App(closeGuard: CloseGuard) {
             ) {
                 // [Транскрипт]: источник — загруженный wav или свежая запись
                 // (замечание 4 приёмки #43: после записи кнопка была недоступна —
-                // enabled учитывал только wavFile).
+                // enabled учитывал только наличие файла).
                 Button(onClick = ::transcribe,
-                    enabled = !busy && (wavFile != null || rec != null)) {
+                    enabled = !busy && (wavBytes != null || rec != null)) {
                     if (busy) {
                         CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
@@ -1651,7 +1657,7 @@ internal fun App(closeGuard: CloseGuard) {
                         MenuCheck(Strings.menuListenExternal, listenExternal) {
                             // Переключение источника: включение внешней программы
                             // останавливает встроенное воспроизведение (если звучит)
-                            if (!listenExternal && playing) { MidiPlayer.stop(); playing = false }
+                            if (!listenExternal && playing) { Platform.midi.stop(); playing = false }
                             listenExternal = !listenExternal
                             menuOpen = false
                         }
@@ -1857,6 +1863,69 @@ internal fun App(closeGuard: CloseGuard) {
                     },
                 )
             }
+            // Вопрос «Сохранить?» (билд #56, п. «б» приёмки #55; этап 4б:
+            // Compose-диалог вместо JOptionPane). «Сохранить» продолжает
+            // отложенное действие только после успешной записи файла.
+            if (askSave) {
+                AlertDialog(
+                    onDismissRequest = {
+                        Log.d("rec", "диалог «Сохранить?»: закрыт")
+                        askSave = false
+                        askSaveNext = null
+                    },
+                    title = { Text(Strings.recUnsavedTitle) },
+                    text = { Text(Strings.recUnsavedAsk) },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            Log.d("rec", "диалог «Сохранить?»: сохранить")
+                            askSave = false
+                            val next = askSaveNext
+                            askSaveNext = null
+                            saveRecording { next?.invoke() }
+                        }) { Text(Strings.recUnsavedSave) }
+                    },
+                    dismissButton = {
+                        Row {
+                            TextButton(onClick = {
+                                Log.d("rec", "диалог «Сохранить?»: не сохранять")
+                                askSave = false
+                                val next = askSaveNext
+                                askSaveNext = null
+                                next?.invoke()
+                            }) { Text(Strings.recUnsavedSkip) }
+                            TextButton(onClick = {
+                                Log.d("rec", "диалог «Сохранить?»: отмена")
+                                askSave = false
+                                askSaveNext = null
+                            }) { Text(Strings.recUnsavedCancel) }
+                        }
+                    },
+                )
+            }
+            // Вопрос «Заменить?» (билд #57, п.2б приёмки #56) — ответ
+            // забирает корутина сохранения через [overwriteAnswer].
+            askOverwriteName?.let { name ->
+                AlertDialog(
+                    onDismissRequest = { overwriteAnswer?.complete(Overwrite.Cancel) },
+                    title = { Text(Strings.recOverwriteTitle) },
+                    text = { Text(Strings.recOverwriteAsk.format(name)) },
+                    confirmButton = {
+                        TextButton(onClick = { overwriteAnswer?.complete(Overwrite.Replace) }) {
+                            Text(Strings.recOverwriteReplace)
+                        }
+                    },
+                    dismissButton = {
+                        Row {
+                            TextButton(onClick = { overwriteAnswer?.complete(Overwrite.OtherName) }) {
+                                Text(Strings.recOverwriteNewName)
+                            }
+                            TextButton(onClick = { overwriteAnswer?.complete(Overwrite.Cancel) }) {
+                                Text(Strings.recOverwriteCancel)
+                            }
+                        }
+                    },
+                )
+            }
         } // Box (content column + overlay menu)
         } // Surface (theme background)
     }
@@ -1866,42 +1935,16 @@ internal fun App(closeGuard: CloseGuard) {
 @OptIn(ExperimentalResourceApi::class)
 private suspend fun readSampleBytes(path: String): ByteArray = Res.readBytes(path)
 
-/** Открыть [uri] во внешней программе ОС: при доступном Desktop API —
- *  [action] (BROWSE для сайтов, OPEN для файлов), при его отсутствии или
- *  сбое — `xdg-open` (билд #57, п.1 приёмки #56: в WSL Desktop API нет, а
- *  xdg-open есть). [ProcessBuilder.start] не ждёт процесс — GUI не
- *  блокируется. Возвращает текст ошибки или null (запущено). */
-private fun openExternal(uri: URI, action: Desktop.Action): String? {
-    try {
-        // Порядок важен: getDesktop() бросает, если Desktop API не поддержан
-        if (Desktop.isDesktopSupported()) {
-            val d = Desktop.getDesktop()
-            if (d.isSupported(action)) {
-                if (action == Desktop.Action.BROWSE) d.browse(uri) else d.open(File(uri))
-                return null
-            }
-        }
-    } catch (_: Exception) {
-        // сбой Desktop API (нет браузера/приложения) — пробуем xdg-open
-    }
-    return try {
-        ProcessBuilder("xdg-open", uri.toString()).start()
-        null
-    } catch (e: Exception) {
-        e.message ?: e.toString()
-    }
-}
-
 /** Play [midi] in the OS application associated with .mid (Desktop API /
  *  xdg-open): a temp file under ~/.v2m is written and opened. The file is
  *  overwritten on each call and never auto-deleted — an external app may
  *  still be reading it (no end-of-playback signal exists on this path).
  *  Returns null on success or an error text. */
 private fun playExternally(midi: ByteArray): String? = try {
-    val dir = File(System.getProperty("user.home"), ".v2m").apply { mkdirs() }
+    val dir = AppData.dir.apply { mkdirs() }
     val f = File(dir, "v2m-listen.mid")
     f.writeBytes(midi)
-    openExternal(f.toURI(), Desktop.Action.OPEN)?.let { Strings.playFailed.format(it) }
+    Platform.external.open(f.absolutePath)?.let { Strings.playFailed.format(it) }
 } catch (e: Exception) {
     Strings.playFailed.format(e.message)
 }
@@ -2142,12 +2185,12 @@ private fun KeySelector(keySel: Int, onSelect: (Int) -> Unit, onPlayTriad: () ->
 /** Инфо-диалоги пунктов меню (замечание А.М. 2026-09-06, 7). */
 private enum class InfoDlg { About, Privacy, Oss }
 
-/** Открыть сайт разработчика в браузере ОС (пункт «О программе»).
+/** Открыть страницу приложения в браузере ОС (пункт «О программе»).
  *  Билд #57 (п.1 приёмки #56): при отсутствии Desktop API — xdg-open;
  *  сбой — best-effort, пишется в журнал. */
 private fun openSite() {
-    openExternal(URI("https://attplus.in"), Desktop.Action.BROWSE)
-        ?.let { Log.d("site", "открыть attplus.in не удалось: $it") }
+    Platform.external.open(Strings.dlgOpenSiteUrl)
+        ?.let { Log.d("site", "открыть ${Strings.dlgOpenSiteUrl} не удалось: $it") }
 }
 
 /** Строка меню без чекбокса — пункт, открывающий инфо-диалог (7). */
@@ -2250,6 +2293,9 @@ private fun EditNotePanel(
 
 /** Фазы кнопки записи (Р14): Idle → Countdown → Recording (клик в обратную). */
 enum class RecPhase { Idle, Countdown, Recording }
+
+/** Ответ диалога «Заменить?» (этап 4б плана Android). */
+enum class Overwrite { Replace, OtherName, Cancel }
 
 /** Кнопка записи Р14: красный кружок. Отсчёт −0:01..−0:00 (2 с, билд #56) —
  *  в поле таймера справа (билд #40; клик во время отсчёта отменяет старт);

@@ -2,6 +2,7 @@ package com.v2m.app
 
 import androidx.compose.ui.graphics.Color
 import kotlin.math.log10
+import kotlin.math.sqrt
 
 /** Уровни для полосы-индикатора (билд #40). Источники:
  *  - [mic] — запись: настоящий RMS сэмплов микрофона (публикует NativeCapture);
@@ -12,6 +13,18 @@ import kotlin.math.log10
 object AudioLevel {
     @Volatile var mic = 0f
     @Volatile var midi = 0f
+}
+
+/** RMS блока S16_LE (0..1) для полосы уровня — формула rmsBlock 16 бит.
+ *  Общая точка определения: десктопный захват (ALSA-JNI) и Android
+ *  (AudioRecord) считают уровень одинаково. */
+fun rmsShorts(block: ShortArray): Float {
+    var sum = 0.0
+    for (v in block) {
+        val x = v / 32768.0
+        sum += x * x
+    }
+    return sqrt(sum / block.size).toFloat()
 }
 
 /** Уровень в dBFS (20·lg(level)); ≤ 1e-5 считается −200 дБ (тишина —

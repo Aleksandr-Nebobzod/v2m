@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">v2m</string>
+    <string name="frame_title">v2m — melody transcriber</string>
+    <string name="frame_note">Application frame: the interface arrives at the next step.</string>
+    <string name="core_ok">Transcription core loaded (%1$d parameters)</string>
+    <string name="core_fail">The core did not load: %1$s</string>
+    <string name="logic_ok">Logic: prefs saved and loaded (%1$s)</string>
+    <string name="logic_fail">Logic: error — %1$s</string>
+    <string name="locale_info">Locale: %1$s</string>
+</resources>

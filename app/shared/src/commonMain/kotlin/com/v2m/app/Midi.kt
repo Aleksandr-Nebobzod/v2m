@@ -1,5 +1,7 @@
 package com.v2m.app
 
+import kotlin.math.roundToInt
+
 /** Имя ноты с октавой: 60 -> "C4", 48 -> "C3", 61 -> "C#4" (MidiNote.name
  *  и строки кадровых признаков FramesSummary ссылаются на неё — единое
  *  место определения). */
@@ -30,7 +32,7 @@ data class MidiNote(
     /** Отображаемый микротон: «+32%», «−40%», у чистых нот — пусто
      *  (А.М. 2026-09-06: «у чистых нот процент сдвига не указывать»). */
     val centsText: String get() {
-        val pct = Math.round(cents)
+        val pct = cents.roundToInt()
         return if (pct == 0) "" else if (pct > 0) "+$pct%" else "$pct%"
     }
 }

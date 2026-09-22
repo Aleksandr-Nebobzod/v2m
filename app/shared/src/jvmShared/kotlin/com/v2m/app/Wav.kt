@@ -8,8 +8,12 @@ import java.nio.ByteOrder
 
 /** Read a PCM WAV file into mono float samples (-1..1) plus the sample rate.
  *  Supports 8/16-bit PCM, any channel count (downmixed to mono). */
-fun readWavMono(file: File): Pair<FloatArray, Int> {
-    val bytes = file.readBytes()
+fun readWavMono(file: File): Pair<FloatArray, Int> = readWavMono(file.readBytes())
+
+/** Разбор WAV из памяти: источник — байты (этап 4б плана Android: общий код
+ *  не работает с файлами напрямую — на Android выбранный файл приходит из
+ *  SAF содержимым, а не путём). */
+fun readWavMono(bytes: ByteArray): Pair<FloatArray, Int> {
     if (bytes.size < 44) throw IllegalArgumentException("файл слишком мал для WAV")
     fun fourcc(off: Int) = bytes.copyOfRange(off, off + 4).toString(Charsets.US_ASCII)
     if (fourcc(0) != "RIFF") throw IllegalArgumentException("не RIFF (WAV)")
@@ -65,7 +69,10 @@ fun readWavMono(file: File): Pair<FloatArray, Int> {
 fun wavDurationSec(file: File): Int? {
     return try {
         RandomAccessFile(file, "r").use { raf ->
-            val bb = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+            // 12 байт — под шапку RIFF/WAVE целиком (8 не хватало: readFully
+            // на 12 байт бросал IndexOutOfBounds, исключение глушилось и
+            // функция возвращала null — поймано самотестом, этап 4б)
+            val bb = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
             fun readTag(): String {
                 raf.readFully(bb.array(), 0, 4)
                 return String(bb.array(), 0, 4, Charsets.US_ASCII)
@@ -83,8 +90,15 @@ fun wavDurationSec(file: File): Int? {
                 val id = readTag()
                 val len = readInt()
                 if (id == "fmt ") {
-                    raf.seek(raf.filePointer + 12) // off+20: byteRate (после audioFormat, channels, sampleRate)
+                    // byteRate лежит на +8 от начала данных чанка (после
+                    // audioFormat, channels, sampleRate); указатель после
+                    // чтения возвращается на начало данных — иначе сдвиг в
+                    // конце цикла отсчитывается от прочитанного byteRate и
+                    // чанк data пропускается
+                    val chunkData = raf.filePointer
+                    raf.seek(chunkData + 8)
                     byteRate = readInt()
+                    raf.seek(chunkData)
                 } else if (id == "data") {
                     return@use if (byteRate > 0) len / byteRate else null
                 }
@@ -97,8 +111,37 @@ fun wavDurationSec(file: File): Int? {
     }
 }
 
+/** Длительность WAV по байтам: читаются только заголовки чанков (данные не
+ *  просматриваются). */
+fun wavDurationSec(bytes: ByteArray): Int? {
+    if (bytes.size < 12) return null
+    fun tag(off: Int) = String(bytes, off, 4, Charsets.US_ASCII)
+    fun i32(off: Int) = (bytes[off].toInt() and 0xFF) or
+        ((bytes[off + 1].toInt() and 0xFF) shl 8) or
+        ((bytes[off + 2].toInt() and 0xFF) shl 16) or
+        ((bytes[off + 3].toInt() and 0xFF) shl 24)
+    if (tag(0) != "RIFF" || tag(8) != "WAVE") return null
+    var off = 12
+    var byteRate = 0 // fmt ещё не встречен — данные до него не считать
+    while (off + 8 <= bytes.size) {
+        val id = tag(off)
+        val len = i32(off + 4)
+        if (id == "fmt " && off + 20 <= bytes.size) {
+            byteRate = i32(off + 16) // byteRate в fmt-данных: audioFormat, channels, sampleRate, byteRate
+        } else if (id == "data") {
+            return if (byteRate > 0) len / byteRate else null
+        }
+        off += 8 + len + (len and 1) // паддинг до чётной границы
+    }
+    return null
+}
+
 /** Записать моно PCM как RIFF/WAVE 16 бит (Р14: сохранение записи с микрофона). */
-fun writeWavMono(file: File, pcm: FloatArray, sr: Int) {
+fun writeWavMono(file: File, pcm: FloatArray, sr: Int) = file.writeBytes(encodeWavMono(pcm, sr))
+
+/** Моно PCM (−1..1) как RIFF/WAVE 16 бит — в память (этап 4б: запись идёт в
+ *  выбранное место через контракт [SaveTarget], а не по пути). */
+fun encodeWavMono(pcm: FloatArray, sr: Int): ByteArray {
     val data = ByteArray(pcm.size * 2)
     var i = 0
     for (v in pcm) {
@@ -117,5 +160,5 @@ fun writeWavMono(file: File, pcm: FloatArray, sr: Int) {
     tag("RIFF"); u32(36 + data.size); tag("WAVE")
     tag("fmt "); u32(16); u16(1); u16(1); u32(sr); u32(sr * 2); u16(2); u16(16)
     tag("data"); u32(data.size); out.write(data)
-    file.writeBytes(out.toByteArray())
+    return out.toByteArray()
 }

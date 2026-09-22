@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">v2m</string>
+    <string name="frame_title">v2m — транскриптор мелодий</string>
+    <string name="frame_note">Каркас приложения: интерфейс подключается на следующем этапе.</string>
+    <string name="core_ok">Ядро транскрипции загружено (%1$d параметров)</string>
+    <string name="core_fail">Ядро не загрузилось: %1$s</string>
+    <string name="logic_ok">Логика: prefs сохранены и прочитаны (%1$s)</string>
+    <string name="logic_fail">Логика: ошибка — %1$s</string>
+    <string name="locale_info">Локаль: %1$s</string>
+</resources>

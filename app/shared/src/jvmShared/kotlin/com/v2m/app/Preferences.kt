@@ -12,15 +12,15 @@ import java.util.Properties
  *  первые кадры не короче замечания: 99 мс → 9 кадров (≈ 104 мс),
  *  50 мс → 5 кадров (≈ 58 мс). Клампы paramsFromProps ниже и границы
  *  ParamMs (App.kt) ссылаются на эти константы — единое место определения. */
-internal const val MIN_NOTE_LEN_FRAMES = 9
-internal const val MIN_ENERGY_TOL_FRAMES = 5
-internal const val FRAME_MS = 11.61f
+const val MIN_NOTE_LEN_FRAMES = 9
+const val MIN_ENERGY_TOL_FRAMES = 5
+const val FRAME_MS = 11.61f
 
 /** Полный фортепианный диапазон (88 клавиш A0..C8, билд #46) — границы
  *  фильтра нот по умолчанию (движки в ☰-меню «Гистограмма»). Единое место
  *  определения: дефолты prefs и valueRange слайдера (App.kt). */
-internal const val PITCH_LO_DEFAULT = 21 // A0
-internal const val PITCH_HI_DEFAULT = 108 // C8
+const val PITCH_LO_DEFAULT = 21 // A0
+const val PITCH_HI_DEFAULT = 108 // C8
 
 /** Активная вкладка «Звучания» по умолчанию (билд #48): пользователь
  *  возвращается к той вкладке, что выбрал (хранится в prefs); при первом
@@ -41,8 +41,8 @@ internal const val SECTION_PREFIX = "section."
  *  [WAV_VOLUME_SCALE_KEY] мигрируются однократно: старое значение × 4
  *  (0,15 → 60) с клампом в верхнюю границу. Единое место определения —
  *  App.kt (слайдер) берёт границы отсюда. */
-internal const val WAV_VOLUME_MAX = 100
-internal const val WAV_VOLUME_DIVISOR = 400f
+const val WAV_VOLUME_MAX = 100
+const val WAV_VOLUME_DIVISOR = 400f
 internal const val WAV_VOLUME_SCALE_KEY = "wavVolumeScale"
 internal const val WAV_VOLUME_SCALE = 2
 
@@ -50,16 +50,16 @@ internal const val WAV_VOLUME_SCALE = 2
  *  хранились проценты усиления 0..200 (scale < [WAV_VOLUME_SCALE]) —
  *  перевод × 4 (0,15 → 60) с клампом; новые значения берутся как есть.
  *  Используется load() и самотестом. */
-internal fun wavVolumeFromStored(stored: Int, scale: Int): Int =
+fun wavVolumeFromStored(stored: Int, scale: Int): Int =
     if (scale >= WAV_VOLUME_SCALE) stored.coerceIn(0, WAV_VOLUME_MAX)
     else (stored * 4).coerceIn(0, WAV_VOLUME_MAX)
 
 /** «Сглаживание» из prefs: только нечётные окна; 1 = выкл (дефолт с билда
  *  #54, п.2 ответа А.М.; сохранённое значение проходит как есть). */
-internal fun smoothingFromStored(stored: Int): Int = (stored or 1).coerceIn(1, 15)
+fun smoothingFromStored(stored: Int): Int = (stored or 1).coerceIn(1, 15)
 
 /** «Стабильность питча» из prefs: только нечётные 1..7; 1 = выкл (билд #54). */
-internal fun pitchMedianFromStored(stored: Int): Int = (stored or 1).coerceIn(1, 7)
+fun pitchMedianFromStored(stored: Int): Int = (stored or 1).coerceIn(1, 7)
 
 /** Persistent user preferences: transcription parameters, instrument,
  *  keySel (the "Тональность" slider), smoothingWindow and the last used
@@ -67,7 +67,7 @@ internal fun pitchMedianFromStored(stored: Int): Int = (stored or 1).coerceIn(1,
  *  the desktop equivalent of Android SharedPreferences, without extra
  *  dependencies. */
 object Preferences {
-    private val file = File(System.getProperty("user.home"), ".v2m" + File.separator + "prefs.properties")
+    private val file: File get() = File(AppData.dir, "prefs.properties")
 
     data class Loaded(
         val params: V2mEngine.Params,
@@ -149,7 +149,7 @@ object Preferences {
     /** Params из properties-строк: отсутствующие ключи — нативные дефолты
      *  движка, значения клампятся. Единое место определения полей Params
      *  (считывание): используется load() и применением пресетов. */
-    internal fun paramsFromProps(p: Properties): V2mEngine.Params {
+    fun paramsFromProps(p: Properties): V2mEngine.Params {
         fun f(k: String, d: Float, lo: Float = 0f, hi: Float = 1f) =
             (p.getProperty(k)?.toFloatOrNull() ?: d).coerceIn(lo, hi)
         fun i(k: String, d: Int, lo: Int = 0, hi: Int = Int.MAX_VALUE) =

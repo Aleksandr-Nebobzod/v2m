@@ -9,17 +9,15 @@ import javax.sound.midi.MidiSystem
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 
-/** Номер билда = номер записи в docs/history.md, описывающей этот билд
- *  (записи идут подзаголовками с датой/временем, см. «Ход работ»).
- *  internal — показывается в «О программе» (App.kt). */
-internal const val BUILD = 57
-
 /** Связь `Window.onCloseRequest` ↔ `App()`: колбэк «закрывать ли окно?»
  *  ставит App() (билд #57, п.2в приёмки #56). [inProgress] — защита от
  *  повторного запроса: диалоги создаются без parent (не модальны), и клик
  *  «×» поверх открытого диалога дошёл бы до onCloseRequest вложенно. */
 internal class CloseGuard {
-    var confirm: (() -> Boolean)? = null
+    /** Спросить о несохранённой записи; [onProceed] — закрывать окно.
+     *  Этап 4б: вопрос задаёт Compose-диалог, ответ приходит позже —
+     *  поэтому колбэк с продолжением, а не синхронный Boolean. */
+    var confirm: ((onProceed: () -> Unit) -> Unit)? = null
     var inProgress = false
 }
 
@@ -29,16 +27,27 @@ fun main(args: Array<String>) {
         return
     }
     if (Log.DEBUG) Log.install() // журнал кликов тестирования (билд #33)
+    installDesktopPlatform() // службы платформы — до первого кадра (этап 4б)
     application {
         val closeGuard = CloseGuard()
         Window(
             onCloseRequest = {
                 if (closeGuard.inProgress) return@Window
                 closeGuard.inProgress = true
+                val finish = {
+                    closeGuard.inProgress = false
+                    exitApplication()
+                }
                 // confirm == null (закрытие до первой композиции) — без диалога
-                val proceed = closeGuard.confirm?.invoke() != false
-                closeGuard.inProgress = false
-                if (proceed) exitApplication()
+                val ask = closeGuard.confirm
+                if (ask == null) {
+                    finish()
+                } else {
+                    ask(finish)
+                    // Флаг снимается сразу: ответ придёт позже (диалог не
+                    // блокирует поток), а окно закроет [finish]
+                    closeGuard.inProgress = false
+                }
             },
             title = "v2m #$BUILD — транскрипция аудио в MIDI",
         ) {
@@ -62,6 +71,19 @@ private fun selfTest() {
         error("wav read failed")
     }
     println("SELF-TEST: pcm=${pcm.size} sr=$sr")
+
+    // Этап 4б: байтовый путь WAV (общий код работает содержимым — на Android
+    // файл приходит из SAF). Round-trip: запись → длительность → разбор.
+    val encoded = encodeWavMono(pcm, sr)
+    val decoded = readWavMono(encoded)
+    check(decoded.first.size == pcm.size && decoded.second == sr) {
+        "байтовый WAV: ${decoded.first.size} сэмплов sr=${decoded.second} (ждали ${pcm.size}/$sr)"
+    }
+    val expectSec = pcm.size / sr
+    val gotSec = wavDurationSec(encoded)
+    check(gotSec == expectSec) { "wavDurationSec(bytes): $gotSec (ждали $expectSec)" }
+    check(wavDurationSec(wav) == expectSec) { "wavDurationSec(file): ${wavDurationSec(wav)} (ждали $expectSec)" }
+    println("SELF-TEST: wav bytes round-trip ok (${encoded.size} байт, ${gotSec} с)")
 
     // Билд #43: проба JNI-слоя записи. JNI-символы резолвятся лениво — без
     // пробы устаревшая libv2m.so прошла бы самотест и упала бы при живой
