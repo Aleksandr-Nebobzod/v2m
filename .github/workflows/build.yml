@@ -28,15 +28,18 @@ jobs:
 
     - name: Make scripts executable (Linux)
       if: runner.os == 'Linux'
-      run: chmod +x ./app/gradlew
+      working-directory: app
+      run: chmod +x ./gradlew
 
     - name: Build for Linux
       if: runner.os == 'Linux'
-      run: ./app/gradlew :desktopApp:packageDistributionForCurrentOS
+      working-directory: app
+      run: ./gradlew :desktopApp:packageDistributionForCurrentOS
 
     - name: Build for Windows
       if: runner.os == 'Windows'
-      run: .\app\gradlew.bat :desktopApp:packageDistributionForCurrentOS
+      working-directory: app
+      run: .\gradlew.bat :desktopApp:packageDistributionForCurrentOS
 
     - name: Upload Linux Artifact
       if: runner.os == 'Linux'
