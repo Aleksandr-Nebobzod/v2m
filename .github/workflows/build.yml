@@ -1,0 +1,59 @@
+name: Build Desktop Distributives
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  # Позволяет запускать сборку вручную из меню Actions
+  workflow_dispatch: 
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        # Указываем ОС, на которых будем собирать
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    # 1. Скачиваем ваш код
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # 2. Устанавливаем Java (замените '17' на вашу версию, если нужна другая)
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    # 3. Выдаем права на исполнение для скриптов (только для Linux)
+    - name: Make scripts executable (Linux)
+      if: runner.os == 'Linux'
+      run: chmod +x ./gradlew run.sh build.sh || true
+
+    # 4. Запуск сборки. 
+    # Если у вас Gradle, оставьте ./gradlew. Если у вас свой скрипт, замените на него.
+    - name: Build for Linux
+      if: runner.os == 'Linux'
+      run: ./gradlew packageDistributionForCurrentOS # Или ваша команда сборки, например ./build.sh
+
+    - name: Build for Windows
+      if: runner.os == 'Windows'
+      run: .\gradlew.bat packageDistributionForCurrentOS # Или ваша команда для Windows
+
+    # 5. Загрузка готовых файлов (артефактов) на GitHub, чтобы вы могли их скачать
+    - name: Upload Linux Artifact
+      if: runner.os == 'Linux'
+      uses: actions/upload-artifact@v4
+      with:
+        name: v2m-linux-x64
+        path: dist/out/v2m-linux-x64-*/ # Укажите путь, куда падает ваш готовый дистрибутив
+
+    - name: Upload Windows Artifact
+      if: runner.os == 'Windows'
+      uses: actions/upload-artifact@v4
+      with:
+        name: v2m-windows-x64
+        path: dist/out/v2m-windows-x64-*/ # Укажите путь для Windows
