@@ -1,0 +1,279 @@
+# Автосборка portable-комплектов v2m для desktop (Linux x64, Windows x64).
+# Android здесь не собирается: APK А.М. собирает и подписывает локально
+# (решение от 2026-09-24).
+#
+# Что делает: собирает ядро libv2m из CMake (ONNX Runtime 1.21.0 — официальный
+# релиз, та же версия, что в Android-AAR), упаковывает portable-комплект
+# Gradle-задачей :desktopApp:packagePortable (единая точка определения упаковки —
+# app/desktopApp/build.gradle.kts) и проверяет комплект: разрешение зависимостей
+# libv2m и загрузку нативной библиотеки в JVM. Сквозной самотест идёт, если
+# задана переменная репозитория V2M_SELFTEST_WAV (фикстура test4.wav лежит в
+# data/ — этот каталог в репозиторий не входит).
+#
+# vendor/ в репозиторий не входит (.gitignore) и берётся из upstream, как в
+# README («Сборка с нуля»): из субмодулей нужны eigen, libnyquist, libremidi
+# (~113 МБ), oboe-resampler лежит в самом upstream. Вендоренный onnxruntime не
+# нужен: его заменяет официальный релиз (-DV2M_ORT_INCLUDE/-DV2M_ORT_LIB), а
+# встроенная модель (ort-model/model/model.ort.c) отслеживается в нашем
+# репозитории. Android SDK в раннерах уже есть; NDK 27.0.12077973 (требование
+# конфигурации :shared) при отсутствии AGP доустановит сам.
+name: desktop
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ORT_VERSION: "1.21.0"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Зависимости upstream (vendor)
+        run: |
+          set -eu
+          # Часть субмодулей upstream описана SSH-адресами (libnyquist,
+          # libremidi) — ключей в CI нет, переписываем их на https.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 https://github.com/sevagh/basicpitch.cpp "$RUNNER_TEMP/bp"
+          git -C "$RUNNER_TEMP/bp" submodule update --init --depth 1 \
+            vendor/eigen vendor/libnyquist vendor/libremidi
+          mkdir -p basicpitch/src/basicpitch.cpp/vendor
+          cp -r "$RUNNER_TEMP/bp/vendor/." basicpitch/src/basicpitch.cpp/vendor/
+          ls -1 basicpitch/src/basicpitch.cpp/vendor
+
+      - name: ONNX Runtime ${{ env.ORT_VERSION }}
+        run: |
+          set -eu
+          curl -fsSL -o "$RUNNER_TEMP/ort.tgz" \
+            "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-linux-x64-$ORT_VERSION.tgz"
+          mkdir -p "$RUNNER_TEMP/ort"
+          tar xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
+          echo "ORT_DIR=$RUNNER_TEMP/ort/onnxruntime-linux-x64-$ORT_VERSION" >> "$GITHUB_ENV"
+
+      - name: Android SDK (конфигурация :shared требует NDK)
+        run: |
+          set -eu
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "SDK=$SDK"
+          if [ -f app/local.properties ]; then
+            echo "app/local.properties уже есть"
+          elif [ -d "$SDK" ]; then
+            echo "sdk.dir=$SDK" > app/local.properties
+          fi
+          if [ ! -d "$SDK/ndk/27.0.12077973" ]; then
+            echo "::warning::NDK 27.0.12077973 отсутствует — AGP доустановит его сам (~1 ГБ, несколько минут)"
+          fi
+
+      - name: ALSA (-dev нужен сборке libv2m)
+        run: |
+          set -eu
+          if ! dpkg -s libasound2-dev > /dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y libasound2-dev
+          fi
+
+      - name: Ядро libv2m
+        run: |
+          set -eu
+          cmake -S basicpitch/src/libv2m -B basicpitch/src/libv2m/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DV2M_ORT_LIB="$ORT_DIR/lib/libonnxruntime.so" \
+            -DV2M_ORT_INCLUDE="$ORT_DIR/include"
+          cmake --build basicpitch/src/libv2m/build --parallel "$(nproc)"
+          ls -l basicpitch/src/libv2m/build/libv2m.so
+
+      - name: Portable-комплект
+        run: |
+          set -eu
+          cd app
+          ./gradlew --no-daemon :desktopApp:packagePortable -Pv2m.ort.dir="$ORT_DIR/lib"
+
+      - name: Проверка комплекта
+        env:
+          SELFTEST_WAV: ${{ vars.V2M_SELFTEST_WAV }}
+        run: |
+          set -eu
+          BUNDLE=$(ls -d app/desktopApp/build/compose/portable/v2m-*-linux-x64 2>/dev/null || true)
+          if [ -z "$BUNDLE" ]; then
+            echo "::error::комплект не найден в app/desktopApp/build/compose/portable"
+            exit 1
+          fi
+          echo "комплект: $BUNDLE"
+          ls -l "$BUNDLE"
+          # 1. Зависимости libv2m разрешаются из самого комплекта (RUNPATH $ORIGIN)
+          if ldd "$BUNDLE/libv2m.so" | grep -q "not found"; then
+            ldd "$BUNDLE/libv2m.so"
+            echo "::error::зависимости libv2m не разрешены из комплекта"
+            exit 1
+          fi
+          ldd "$BUNDLE/libv2m.so" | grep -E "onnxruntime|asound"
+          # 2. JVM грузит нативную библиотеку комплекта вместе с её зависимостями
+          jshell -R-Djava.library.path="$PWD/$BUNDLE" --class-path "$BUNDLE"/*.jar - \
+            > "$RUNNER_TEMP/jshell.log" 2>&1 <<'EOF'
+          System.loadLibrary("v2m");
+          System.out.println("native-ok");
+          /exit
+          EOF
+          cat "$RUNNER_TEMP/jshell.log"
+          grep -q native-ok "$RUNNER_TEMP/jshell.log"
+          # 3. Сквозной самотест — если задана фикстура (data/ не в репозитории)
+          if [ -n "$SELFTEST_WAV" ] && [ -f "$SELFTEST_WAV" ]; then
+            bash "$BUNDLE"/v2m.sh --self-test "$SELFTEST_WAV" "$RUNNER_TEMP/selftest"
+          else
+            echo "самотест пропущен: переменная репозитория V2M_SELFTEST_WAV не задана"
+          fi
+
+      - name: Артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2m-linux-x64
+          path: app/desktopApp/build/compose/portable/*.zip
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Зависимости upstream (vendor)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Часть субмодулей upstream описана SSH-адресами (libnyquist,
+          # libremidi) — ключей в CI нет, переписываем их на https.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 https://github.com/sevagh/basicpitch.cpp "$env:RUNNER_TEMP\bp"
+          git -C "$env:RUNNER_TEMP\bp" submodule update --init --depth 1 vendor/eigen vendor/libnyquist vendor/libremidi
+          New-Item -ItemType Directory -Force "basicpitch\src\basicpitch.cpp\vendor" | Out-Null
+          Copy-Item -Recurse -Force "$env:RUNNER_TEMP\bp\vendor\*" "basicpitch\src\basicpitch.cpp\vendor\"
+          Get-ChildItem "basicpitch\src\basicpitch.cpp\vendor" | Select-Object -ExpandProperty Name
+
+      - name: ONNX Runtime ${{ env.ORT_VERSION }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue" # без полосы прогресса у Invoke-WebRequest
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$env:ORT_VERSION/onnxruntime-win-x64-$env:ORT_VERSION.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\ort.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\ort.zip" -DestinationPath "$env:RUNNER_TEMP\ort" -Force
+          "ORT_DIR=$env:RUNNER_TEMP\ort\onnxruntime-win-x64-$env:ORT_VERSION" >> $env:GITHUB_ENV
+
+      - name: Android SDK (конфигурация :shared требует NDK)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdk = $env:ANDROID_HOME
+          if (!$sdk) { $sdk = "C:\Android\android-sdk" }
+          Write-Host "SDK=$sdk"
+          if (!(Test-Path "app\local.properties") -and (Test-Path $sdk)) {
+            "sdk.dir=$($sdk -replace '\\','/')" | Out-File -Encoding ascii "app\local.properties"
+          }
+          if (!(Test-Path "$sdk\ndk\27.0.12077973")) {
+            Write-Host "::warning::NDK 27.0.12077973 отсутствует — AGP доустановит его сам (~1 ГБ, несколько минут)"
+          }
+
+      - name: Ядро libv2m
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Генератор — умолчание раннера (MSVC x64). Release-сборка кладёт
+          # v2m.dll в корень каталога сборки (RUNTIME_OUTPUT_DIRECTORY_RELEASE
+          # в basicpitch/src/libv2m/CMakeLists.txt).
+          cmake -S basicpitch/src/libv2m -B basicpitch/src/libv2m/build `
+            -DV2M_ORT_LIB="$env:ORT_DIR\lib\onnxruntime.lib" `
+            -DV2M_ORT_INCLUDE="$env:ORT_DIR\include"
+          if ($LASTEXITCODE -ne 0) { throw "cmake: конфигурация не удалась" }
+          cmake --build basicpitch/src/libv2m/build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "cmake: сборка не удалась" }
+          if (!(Test-Path "basicpitch\src\libv2m\build\v2m.dll")) {
+            Get-ChildItem -Recurse "basicpitch\src\libv2m\build" -Filter *.dll | Select-Object FullName
+            throw "v2m.dll не найден в корне каталога сборки"
+          }
+          Get-Item "basicpitch\src\libv2m\build\v2m.dll" | Select-Object Name, Length
+
+      - name: Portable-комплект
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Push-Location app
+          .\gradlew.bat --no-daemon :desktopApp:packagePortable "-Pv2m.ort.dir=$env:ORT_DIR\lib"
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code -ne 0) { throw "packagePortable не удалась" }
+
+      - name: Проверка комплекта
+        shell: pwsh
+        env:
+          SELFTEST_WAV: ${{ vars.V2M_SELFTEST_WAV }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bundle = (Get-ChildItem -Directory "app\desktopApp\build\compose\portable" -Filter "v2m-*-windows-x64").FullName
+          if (!$bundle) { throw "комплект не найден в app\desktopApp\build\compose\portable" }
+          Write-Host "комплект: $bundle"
+          Get-ChildItem $bundle | Select-Object Name, Length
+          if (!(Test-Path "$bundle\onnxruntime.dll")) { throw "onnxruntime.dll нет в комплекте" }
+          # Каталог комплекта — в PATH: так же делает v2m.bat (зависимости
+          # v2m.dll Windows ищет в PATH и в каталоге приложения).
+          $env:PATH = "$bundle;$env:PATH"
+          $jar = (Get-ChildItem "$bundle\*.jar").FullName
+          $probe = "System.loadLibrary(`"v2m`");`nSystem.out.println(`"native-ok`");`n/exit"
+          $log = $probe | jshell -R-Djava.library.path="$bundle" --class-path "$jar" 2>&1 | Out-String
+          Write-Host $log
+          if ($log -notmatch "native-ok") { throw "нативная библиотека не загрузилась" }
+          if ($env:SELFTEST_WAV -and (Test-Path $env:SELFTEST_WAV)) {
+            & "$bundle\v2m.bat" --self-test "$env:SELFTEST_WAV" "$env:RUNNER_TEMP\selftest"
+            if ($LASTEXITCODE -ne 0) { throw "самотест не прошёл" }
+          } else {
+            Write-Host "самотест пропущен: переменная репозитория V2M_SELFTEST_WAV не задана"
+          }
+
+      - name: Артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2m-windows-x64
+          path: app/desktopApp/build/compose/portable/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Комплекты в релиз тега
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/*.zip \
+            --title "v2m $GITHUB_REF_NAME" --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
