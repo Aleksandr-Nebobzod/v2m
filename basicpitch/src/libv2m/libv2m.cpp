@@ -2,6 +2,7 @@
 // See v2m.h for the API. The CLI (src_cli/basicpitch.cpp) uses the same
 // entry point; defaults stay byte-identical to the CLI behavior.
 #include "v2m.h"
+#include "v2m_posix.h"
 #include "audio_effects.hpp"
 #include "basicpitch.hpp"
 #include "spectrogram.hpp"
@@ -82,7 +83,7 @@ static std::string now_iso()
 {
     const std::time_t t = std::time(nullptr);
     std::tm tm{};
-    localtime_r(&t, &tm);
+    v2m_localtime_r(&t, &tm);
     char buf[32];
     std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
     return buf;

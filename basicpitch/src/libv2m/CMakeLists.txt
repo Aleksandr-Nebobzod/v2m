@@ -42,6 +42,9 @@ elseif(WIN32)
     endif()
     include_directories(${JAVA_HOME_ENV}/include)
     include_directories(${JAVA_HOME_ENV}/include/win32)
+    # Ресемплер Oboe включает <unistd.h>, которого в MSVC нет; шим добавляет
+    # только этот каталог и только для Windows (msvc_compat/unistd.h).
+    include_directories(${V2M_ROOT}/libv2m/msvc_compat)
 else()
     # Умолчание — системный пакет Debian (libonnxruntime-dev); portable-сборка
     # передаёт -DV2M_ORT_LIB=<распакованный релиз ONNX Runtime>/lib/libonnxruntime.so.
@@ -105,6 +108,10 @@ if(MSVC)
     foreach(cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
         set_target_properties(v2m PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${cfg} "${CMAKE_BINARY_DIR}")
     endforeach()
+    # M_PI в CRT MSVC определён только при _USE_MATH_DEFINES (+ <math.h>), а его
+    # использует ресемплер Oboe (MultiChannelResampler.cpp:148). Макрос задаём
+    # строкой компиляции — так он определён до любого включения.
+    target_compile_definitions(v2m PRIVATE _USE_MATH_DEFINES)
 endif()
 
 if(ANDROID)

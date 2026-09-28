@@ -2,6 +2,50 @@
 
 Записи по датам, новые в начало документа.
 
+## 2026-09-28
+
+### 23:55 · билд #60 (продолжение): починка автосборки desktop по логам первых прогонов
+
+**Задача.** Первые запуски `desktop.yml` (ветка `refactoring/ui-commonmain`) упали:
+Linux — `./gradlew: Permission denied` (шаг упаковки), Windows — `unistd.h` в
+заголовках ресемплера. Прогоны на `main` падали иначе (`onnxruntime_cxx_api.h`,
+`jni_md.h`): в `main` ядро отстаёт от ветки, поэтому первый прогон шёл по старому
+коду — для запуска нужно выбирать ветку в «Use workflow from».
+
+**Что сделано.**
+
+- `app/gradlew`: в индексе был режим 100644 — выставлен 100755 (`git update-index
+  --chmod=+x`); плюс страховка в Linux-джобе `chmod +x ./gradlew` (в Windows
+  вызывается `gradlew.bat`, бит не нужен).
+- `basicpitch/src/libv2m/msvc_compat/unistd.h` — новый шим для MSVC: заголовка
+  `<unistd.h>` в Windows нет, его включают семь заголовков ресемплера Oboe
+  (`vendor/oboe-resampler/*.h`); POSIX-имён из него ресемплер не использует
+  (проверено по .h и .cpp), поэтому шим пустой. Каталог подключается только в
+  ветке `WIN32` CMakeLists (на Linux системный `<unistd.h>` перекрывать нельзя).
+- Windows, `M_PI`: в CRT MSVC он определён лишь при `_USE_MATH_DEFINES`, а его
+  использует `MultiChannelResampler.cpp:148` — макрос задан строкой компиляции
+  (`target_compile_definitions` в блоке `if(MSVC)`).
+- Windows, `localtime_r`: в MSVC это `localtime_s` с обратным порядком аргументов
+  (`libv2m.cpp` — отметка времени прогона в метаданных MIDI). Отображение
+  добавлено в `v2m_posix.h` (`v2m_localtime_r`, единое место POSIX→Windows);
+  `libv2m.cpp` подключает заголовок и вызывает обёртку.
+- Статическая проверка остальных файлов, компилируемых под Windows (`libv2m`,
+  `basicpitch.cpp/src`, `midi2musicxml`, `oboe-resampler`): других POSIX-заголовков
+  и вызовов нет (`<poll.h>` — только в `v2m_capture.cpp`, он исключён из сборки на
+  Windows и Android).
+
+**Проверка (локальная, Linux).** Ядро: `cmake` + сборка — EXIT=0. Сквозной
+самотест desktop `--self-test` — EXIT=0, 59 строк `SELF-TEST` (как в базовой
+линии). Комплект: `:desktopApp:packagePortable` — EXIT=0, `v2m-60-linux-x64.zip`
+(38 633 537 Б); `md5` упакованной `libv2m.so` совпадает с собранной (задача
+UP-TO-DATE — правки Linux-сборку не меняют); `ldd` разрешает `libonnxruntime.so.1.21`
+из комплекта (`RUNPATH $ORIGIN`), `jshell` грузит библиотеку в JVM — `native-ok`.
+Локальный `app/local.properties` (SDK) отсутствовал — восстановлен
+(`sdk.dir=/mnt/d/Android/Sdk`; файл в `.gitignore`).
+
+**Не проверено.** Джоб `windows` — локально MSVC нет, проверяется запуском
+workflow. Правки в рабочем каталоге: без коммита автосборка их не увидит.
+
 ## 2026-09-24
 
 ### 11:00 · билд #60 (продолжение): автосборка portable-комплектов desktop (Linux, Windows)

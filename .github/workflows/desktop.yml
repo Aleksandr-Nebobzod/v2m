@@ -103,6 +103,9 @@ jobs:
         run: |
           set -eu
           cd app
+          # Страховка на случай, если бит выполнения gradlew потеряется в
+          # индексе: файл-режимы Windows в репозиторий не попадают.
+          chmod +x ./gradlew
           ./gradlew --no-daemon :desktopApp:packagePortable -Pv2m.ort.dir="$ORT_DIR/lib"
 
       - name: Проверка комплекта
