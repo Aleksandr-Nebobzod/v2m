@@ -1,1 +1,0 @@
-/mnt/d/a/v2m/basicpitch/src/libv2m/CMakeLists.txt

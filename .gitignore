@@ -25,6 +25,9 @@ basicpitch/src/basicpitch.cpp/vendor/
 # Временные файлы
 *.tmp
 
+.cxx/
+**/.cxx/
+
 # Каталог сборки внутри клона (собирался upstream-код)
 basicpitch/src/basicpitch.cpp/CMakeFiles/
 basicpitch/src/basicpitch.cpp/CMakeCache.txt
