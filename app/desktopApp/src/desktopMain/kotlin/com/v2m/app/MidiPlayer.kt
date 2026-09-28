@@ -111,7 +111,7 @@ object MidiPlayer {
             }
             runCatching { q?.close() }
             runCatching { s?.close() }
-            return Strings.playFailed.format(e.message)
+            return Strings.playFailed(e.message)
         }
     }
 

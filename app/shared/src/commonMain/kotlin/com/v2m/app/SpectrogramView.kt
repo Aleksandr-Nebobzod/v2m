@@ -21,7 +21,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
@@ -31,10 +30,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import org.jetbrains.skia.Bitmap
-import org.jetbrains.skia.ColorAlphaType
-import org.jetbrains.skia.ColorType
-import org.jetbrains.skia.ImageInfo
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -42,12 +37,12 @@ import kotlin.math.roundToInt
 /** Границы обзора и кадр — те же, что в basicpitch/src/spectrogram.hpp. */
 private const val SPEC_F_MIN = 10.0
 private const val SPEC_F_MAX = 10000.0
-internal const val SPEC_HOP = 256.0 // internal — тот же hop проверяет самотест
+const val SPEC_HOP = 256.0 // тот же hop проверяет самотест (Main.kt)
 private const val SPEC_SR = 22050.0
 
 /** Палитра гаммы: 0 — тишина, 255 — верх шкалы; ARGB (0xFF в альфе).
  *  [invert] — ровно инвертированные цвета для дневной темы (проба билда #49). */
-internal fun gammaPalette(g: Gamma, invert: Boolean = false): IntArray {
+fun gammaPalette(g: Gamma, invert: Boolean = false): IntArray {
     val nodes = g.stops
     return IntArray(256) { i ->
         val t = i / 255f
@@ -65,28 +60,22 @@ internal fun gammaPalette(g: Gamma, invert: Boolean = false): IntArray {
 }
 
 /** Матрица спектрограммы в картинку: X — частота (полоса 0 слева), Y — время
- *  (кадр 0 сверху). Пиксели палитры — BGRA (ColorType.BGRA_8888).
- *  internal — тот же код проверяет самотест (сохранение PNG без GUI). */
-internal fun spectrogramBitmap(spec: Spectrogram, palette: IntArray): Bitmap? {
+ *  (кадр 0 сверху). Пиксели палитры — ARGB (0xFF в альфе); в [ImageBitmap] их
+ *  переводит единственная точка перевода — [argbToImageBitmap] (Pixels.kt,
+ *  этап 4в: реализация принципиально платформенная). Тот же код проверяет
+ *  самотест (сохранение PNG без GUI). */
+fun spectrogramBitmap(spec: Spectrogram, palette: IntArray): ImageBitmap? {
     if (spec.frames <= 0 || spec.bands <= 0) return null
     val w = spec.bands
     val h = spec.frames
-    val px = ByteArray(w * h * 4)
+    val argb = IntArray(w * h)
     var i = 0
     for (frame in 0 until h) {
         for (band in 0 until w) {
-            val c = palette[spec[frame, band]]
-            px[i++] = (c and 0xFF).toByte()          // B
-            px[i++] = ((c shr 8) and 0xFF).toByte()  // G
-            px[i++] = ((c shr 16) and 0xFF).toByte() // R
-            px[i++] = 0xFF.toByte()                  // A
+            argb[i++] = 0xFF000000.toInt() or (palette[spec[frame, band]] and 0xFFFFFF)
         }
     }
-    val info = ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.OPAQUE)
-    val bmp = Bitmap()
-    bmp.allocPixels(info)
-    if (!bmp.installPixels(px)) return null
-    return bmp
+    return argbToImageBitmap(w, h, argb)
 }
 
 /** Спектрограмма входа (билд #47, вкладка «Спектр»): с чем пришлось работать
@@ -107,7 +96,7 @@ internal fun spectrogramBitmap(spec: Spectrogram, palette: IntArray): Bitmap? {
  *         материала; < 0 — метка не рисуется
  */
 @Composable
-internal fun SpectrogramView(spec: Spectrogram, tScale: Float, playPosSec: Float = -1f,
+fun SpectrogramView(spec: Spectrogram, tScale: Float, playPosSec: Float = -1f,
                              gamma: Gamma = Gamma.DEFAULT, invert: Boolean = false,
                              holdSpec: Spectrogram? = null, holdLabel: String? = null,
                              notesEndSec: Float = -1f) {
@@ -115,7 +104,7 @@ internal fun SpectrogramView(spec: Spectrogram, tScale: Float, playPosSec: Float
     // Нажатие/удержание (билд #50): пока палец/кнопка на канве — [holdSpec]
     var held by remember { mutableStateOf(false) }
     val shown = if (held && holdSpec != null) holdSpec else spec
-    val image = remember(shown, palette) { spectrogramBitmap(shown, palette)?.asComposeImageBitmap() }
+    val image = remember(shown, palette) { spectrogramBitmap(shown, palette) }
     if (image == null || shown.frames <= 0) return
 
     val viewHeight = 300.dp // фиксированное окно; канвас внутри прокручивается

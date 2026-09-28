@@ -12,7 +12,9 @@ object Strings {
     const val wavButton = "Выбрать WAV"
     const val noFile = "файл не выбран"
     const val recCd = "Записать с микрофона"
-    const val recCountdownCd = "Запуск записи через %d… (нажмите — отменить)"
+
+    /** «Запуск записи через N…» — отсчёт перед началом записи. */
+    fun recCountdownCd(sec: Int) = "Запуск записи через $sec… (нажмите — отменить)"
     // Отсчёт 2 с (билд #56): −0:01..−0:00, поэтому на нуле — без «через 0…»
     const val recStartCd = "Запуск записи… (нажмите — отменить)"
     const val recStopCd = "Остановить запись"
@@ -26,7 +28,9 @@ object Strings {
     const val recUnsavedCancel = "Отмена"
     // Подтверждение перезаписи существующего файла (билд #57, п.2б приёмки #56)
     const val recOverwriteTitle = "Заменить файл?"
-    const val recOverwriteAsk = "Файл «%s» уже существует.\nЗаменить его?" // %s — имя файла
+
+    /** Вопрос о перезаписи: [name] — имя файла. */
+    fun recOverwriteAsk(name: String) = "Файл «$name» уже существует.\nЗаменить его?"
     const val recOverwriteReplace = "Заменить"
     const val recOverwriteNewName = "Другое имя"
     const val recOverwriteCancel = "Отмена"
@@ -44,7 +48,9 @@ object Strings {
     const val finalSizeLabel = "Размер:"
     const val bpmUnit = "BPM"
     const val auto = "авто"
-    const val autoDetected = "авто (%s)" // auto with the detected value in parens
+
+    /** «авто (значение)» — авто с распознанным значением [detected]. */
+    fun autoDetected(detected: String) = "авто ($detected)"
 
     /** Popular time signatures offered as an export override. */
     val SIZE_OPTIONS: List<Pair<String, Pair<Int, Int>>> = listOf(
@@ -65,8 +71,15 @@ object Strings {
     const val secNotes = "Звучание" // переименовано по приёмке #28 (замечание 5)
 
     // Version list
-    const val versionRow = "В.%02d — %d/%d, %.1f BPM, %d нот%s%s, %s" // %s1 = ", <тональность>", %s2 = ", NN% гарм." или ""
-    const val versionNoResult = "В.%02d (нет результата)"
+    /** Строка версии: «В.01 — 4/4, 120.0 BPM, 12 нот, C major, 98% гарм., имя.wav».
+     *  [keyPart] — «, C major» или пусто; [harm] — «, 98% гарм.» или пусто. */
+    fun versionRow(
+        idx: Int, tsNum: Int, tsDen: Int, bpm: Double, notes: Int,
+        keyPart: String, harm: String, wavName: String,
+    ) = "В.${zeroPad(idx, 2)} — $tsNum/$tsDen, ${fmt(bpm, 1)} BPM, $notes нот$keyPart$harm, $wavName"
+
+    /** «В.01 (нет результата)». */
+    fun versionNoResult(idx: Int) = "В.${zeroPad(idx, 2)} (нет результата)"
 
     // «Звучание» — вкладки: «Спектр» — спектрограмма входа (билд #47, обзор
     // материала), «Кванты» — результаты обработки параметров ритма,
@@ -100,25 +113,56 @@ object Strings {
     const val specComputing = "(расчёт спектрограммы…)"
     // Граница на канве «Спектр»: время конца последней ноты прогона (билд #56)
     const val notesEndMark = "конец нот"
-    const val paramsLine = "параметры: %s"
-    const val fileLine = "файл: %s"
-    const val tempoLine = "темп: %.2f BPM, размер %d/%d, нот: %d, L=1/8"
-    const val keyLine = "тональность: %s (%s)"
+    fun paramsLine(text: String) = "параметры: $text"
+
+    fun fileLine(name: String) = "файл: $name"
+
+    fun tempoLine(bpm: Double, tsNum: Int, tsDen: Int, notes: Int) =
+        "темп: ${fmt(bpm, 2)} BPM, размер $tsNum/$tsDen, нот: $notes, L=1/8"
+
+    fun keyLine(name: String, alterations: String) = "тональность: $name ($alterations)"
+
     // Строка-сводка кадровых признаков (билд #38) во фрейме «Отчёт» —
     // паспорт записи из .frames.json; собирается в framesSummaryLine
     // (FramesSummary.kt) из частей ниже, разделитель частей — ", ".
-    const val framesSummary = "признаки: %s"
-    const val sumRange = "тесситура %s–%s" // %s: имена нот (C3, C#4)
-    const val sumConf = "conf %s" // %s: медианная уверенность кадров (0.59)
-    const val sumPoly = "полифония %s" // %s: "1.1" или "1.1/2" (с макс.)
-    const val sumOnsets = "атаки %s" // %s: "64 (3.5/с)" — с плотностью
-    const val sumStable = "стабильность %.0f%%" // доля стабильных контуров, %
-    const val sumDrift = "дрейф %s ц" // %s: "22.7/66.7" (средний/перцентиль 95)
+    fun framesSummary(parts: String) = "признаки: $parts"
+
+    /** [lo], [hi] — имена нот (C3, C#4). */
+    fun sumRange(lo: String, hi: String) = "тесситура $lo–$hi"
+
+    /** [value] — медианная уверенность кадров (0.59). */
+    fun sumConf(value: String) = "conf $value"
+
+    /** [value] — «1.1» или «1.1/2» (с макс.). */
+    fun sumPoly(value: String) = "полифония $value"
+
+    /** [value] — «64 (3.5/с)» — с плотностью. */
+    fun sumOnsets(value: String) = "атаки $value"
+
+    /** [percent] — доля стабильных контуров, %. */
+    fun sumStable(percent: Double) = "стабильность ${fmt(percent, 0)}%"
+
+    /** [value] — «22.7/66.7» (средний/перцентиль 95). */
+    fun sumDrift(value: String) = "дрейф $value ц"
+
     // Mode-fit line: translated in the UI, the English original is kept for
     // the future en-strings file (same place as the native report line).
-    const val modeFitLine = "подбор лада: %s, %d%% нот в пределах %d центов, сила притягивания %.1f"
+    fun modeFitLine(keyName: String, pct: Int, cents: Int, strength: Double) =
+        "подбор лада: $keyName, $pct% нот в пределах $cents центов, сила притягивания ${fmt(strength, 1)}"
+
     const val modeFitRaw = "mode fit: %s, %d%% of notes within %d cents, snap strength %s"
     const val notesHeader = "  такт:доля | нота·длит. | длит.с  | громк."
+
+    /** Строка таблицы нот (вкладка ABC): «  ~04/16 | C4·1/8 | 1.25 | 90».
+     *  [tilde] — маркер вне сетки ("" или "~", поле ширины 1 — как `%1s`,
+     *  номер такта не сдвигается), [measure] — такт, [frac] — доля
+     *  («04/16»), [cell] — нота·длительность, [durSec] — длительность в
+     *  секундах (поле 7.2), [velocity] — громкость (поле 3, у пауз пусто). */
+    fun notesRow(
+        tilde: String, measure: Int, frac: String, cell: String,
+        durSec: Double, velocity: String,
+    ) = "  ${tilde.padStart(1)}${zeroPad(measure, 2)}:$frac | $cell | " +
+        "${fmtPad(durSec, 2, 7)} | ${velocity.padStart(3)}"
 
     // Export clef (MusicXML output)
     const val clefLabel = "Ключ:"
@@ -151,7 +195,7 @@ object Strings {
     // Key selector: 0 = auto (mode fit), 1..12 major, 13..24 minor.
     // Root spellings share ROOT_NAMES (Key.kt) — the circle-of-fifths
     // orthography whose fifths match MAJOR_FIFTHS (Eb, not D#).
-    const val keySelLabel = "Тональность: %s"
+    fun keySelLabel(name: String) = "Тональность: $name"
     const val keyAutoName = "Авто"
     val KEY_SEL_NAMES: List<String> = run {
         val names = mutableListOf(keyAutoName)
@@ -173,12 +217,13 @@ object Strings {
     const val editDownCd = "вниз на полтона (у чистой ноты с микротоном — к чистой)"
     const val editUpCd = "вверх на полтона (у чистой ноты с микротоном — к чистой)"
     const val editMuteCd = "X с памятью: удалить ноту; повторное нажатие возвращает длительность"
-    const val editInfoCd = "нота %s" // %s: имя ноты с октавой и микротоном
+    /** [name] — имя ноты с октавой и микротоном. */
+    fun editInfoCd(name: String) = "нота $name"
 
     // Низ экрана (билд #36, п.2): [Транскрипт], [▶] — растянута с рамкой,
     // [Экспорт] — системный диалог с типами (п.3)
     const val exportLabel = "Экспорт"
-    const val exportCd = "Экспорт результата (формат выбирается в диалоге: %s)"
+    fun exportCd(formats: String) = "Экспорт результата (формат выбирается в диалоге: $formats)"
     const val exportDialogTitle = "Сохранить как"
     const val listenIconCd = "слушать текущую версию"
     const val stopIconCd = "остановить прослушивание"
@@ -200,8 +245,10 @@ object Strings {
 
     // Errors
     const val transcribeFailed = "транскрипция не удалась (см. stderr)"
-    const val playFailed = "не удалось воспроизвести: %s"
-    const val saveFailed = "не удалось записать %s (см. stderr)"
+
+    fun playFailed(reason: String?) = "не удалось воспроизвести: $reason"
+
+    fun saveFailed(name: String) = "не удалось записать $name (см. stderr)"
 
     // Sandwich menu (top-right corner): options grouped by section. The
     // «Слушать» group: one checkbox — where the «Слушать» button plays
@@ -214,26 +261,27 @@ object Strings {
     // громкость MIDI»): прямой CC7 (channel volume) всех 16 каналов
     // синтезатора, в процентах. 100 % = громкость синтезатора по умолчанию
     // (CC7 = 100 у SoftSynthesizer — замерено), верх — 127 %.
-    const val menuMidiVolume = "Громкость MIDI: %d %%"
+    fun menuMidiVolume(pct: Int) = "Громкость MIDI: $pct %"
 
     // Громкость WAV-воспроизведения (билд #52, п.3 приёмки #51: «можно ли
     // чуть приглушить Wav-воспроизведение внутри v2m?»; шкала — билд #53,
     // п.1 приёмки #52: «от 0 до 25 % (а показывать можно 0..100)»): линейный
     // множитель к сэмплам ▶ источника; регистр 100 = 25 % усиления
     // (см. WAV_VOLUME_MAX / WAV_VOLUME_DIVISOR в Preferences.kt)
-    const val menuWavVolume = "Громкость WAV: %d %%"
+    fun menuWavVolume(pct: Int) = "Громкость WAV: $pct %"
     const val viewMenu = "Вид"
     const val menuDarkTheme = "тёмная тема"
     const val menuShowAbc = "ABC-notation" // Вид: показывать ABC-вкладку (билд #35, п.2)
     const val chartMenu = "Гистограмма"
     // ☰-меню «Гистограмма»: выбор гаммы спектрограммы (билд #49)
-    const val menuGamma = "Гамма: %s" // %s — Gamma.title
+    fun menuGamma(title: String) = "Гамма: $title" // title — Gamma.title
     const val gammaTitle = "Гамма спектрограммы"
     const val gammaHint = "цвета уровня: 0 — тишина, верх шкалы — самый яркий"
-    const val chartTScale = "t-масштаб: %.1f с"
+    fun chartTScale(sec: Float) = "t-масштаб: ${fmt(sec, 1)} с"
+
     // Фильтр нот (билд #46, замечание «б» приёмки #45): показ и экспорт нот
-    // в диапазоне питчей; %s — «A0» / «C8» (границы, pitchName)
-    const val chartRange = "диапазон нот: %s – %s"
+    // в диапазоне питчей; [lo]/[hi] — «A0» / «C8» (границы, pitchName)
+    fun chartRange(lo: String, hi: String) = "диапазон нот: $lo – $hi"
     const val chartRangeHint = "ноты вне диапазона скрыты на «Тонах» и в ABC и не попадают в экспорт"
 
     // Инфо-пункты внизу меню (замечание А.М. 2026-09-06, п.7):
@@ -250,7 +298,7 @@ object Strings {
     // открывает диалог с именем автора — оно попадает в «meta» файла
     // признаков <имя>.frames.json (сводка извлекается из ядра всегда).
     const val framesMenuTitle = "Файл признаков"
-    const val menuAuthor = "Автор: %s" // %s — имя автора или authorNone
+    fun menuAuthor(name: String) = "Автор: $name" // name — имя автора или authorNone
     const val authorNone = "не указан"
     const val authorDlgTitle = "Автор файла признаков"
     const val authorDlgText = "Имя попадёт в «meta.author» файла признаков. Пусто — поле не указывается."

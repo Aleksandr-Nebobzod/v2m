@@ -14,6 +14,7 @@ class NativeCapture(private val targetRate: Int = 22050) : AudioCapture {
     @Volatile private var handle: Long = 0 // нативный v2m_capture*; 0 = закрыто
 
     override fun open(): String? {
+        if (!SUPPORTED) return NO_CAPTURE
         val h = nativeCaptureOpen("default", targetRate, 1)
         if (h == 0L) {
             val why = nativeCaptureLastError(0)
@@ -90,8 +91,10 @@ class NativeCapture(private val targetRate: Int = 22050) : AudioCapture {
         return AudioCapture.Result(pcm, targetRate)
     }
 
-    /** Проба JNI-слоя захвата (самотест Main.selfTest): ждём "alsa-ok…". */
-    fun selftest(): String = nativeCaptureSelfTest()
+    /** Проба JNI-слоя захвата (самотест Main.selfTest): ждём "alsa-ok…".
+     *  Там, где захвата нет ([SUPPORTED] == false), натив не зовётся —
+     *  возвращается [NO_CAPTURE]. */
+    fun selftest(): String = if (SUPPORTED) nativeCaptureSelfTest() else NO_CAPTURE
 
     private external fun nativeCaptureOpen(device: String?, rate: Int, channels: Int): Long
     private external fun nativeCaptureRead(handle: Long, buf: ShortArray, maxFrames: Int): Int
@@ -99,6 +102,20 @@ class NativeCapture(private val targetRate: Int = 22050) : AudioCapture {
     private external fun nativeCaptureClose(handle: Long)
     private external fun nativeCaptureLastError(handle: Long): String
     private external fun nativeCaptureSelfTest(): String
+
+    companion object {
+        /** Нативный захват есть только в Linux-сборке (ALSA через JNI). Windows
+         *  собирается без него: ALSA там отсутствует, WASAPI не реализован
+         *  (решение А.М. 2026-09-24) — символы NativeCapture не компилируются
+         *  (CMakeLists + v2m_jni.cpp), вызов упал бы UnsatisfiedLinkError.
+         *  На Linux проба самотеста остаётся строгой: отсутствие символов там
+         *  означает устаревшую libv2m.so (см. Main.selfTest). */
+        val SUPPORTED: Boolean =
+            !System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
+
+        /** Ответ [open] там, где захвата нет: UI покажет «микрофон недоступен». */
+        const val NO_CAPTURE = "сборка для Windows без захвата"
+    }
 
     init {
         System.loadLibrary("v2m")

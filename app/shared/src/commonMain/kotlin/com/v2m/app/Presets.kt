@@ -1,10 +1,5 @@
 package com.v2m.app
 
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-import java.util.Properties
-
 /** Пресет (приёмка #28, замечание 2 А.М.): уникальное имя + набор
  *  «ключ-значение» параметров, отличных от дефолтных (нативные дефолты
  *  движка, см. libv2m v2m_params_default). Ключи — те же, что в
@@ -33,49 +28,31 @@ val FACTORY_PRESETS: List<Preset> = listOf(
     )),
 )
 
-/** Хранилище пользовательских пресетов — data-storage паттерн: на desktop
- *  это properties-файл в пользовательских данных (~/.v2m, где уже лежат
- *  prefs.properties с каталогами и значениями последней сессии); на других
- *  платформах то же API отображается на их хранилище (Android
- *  SharedPreferences / DataStore). Ключ записи — имя пресета, значение —
- *  закодированный дифф. */
-class PresetStore(private val file: File) {
-    private fun loadProps(): Properties {
-        val p = Properties()
-        if (file.isFile) runCatching { file.inputStream().use(p::load) }
-        return p
-    }
-
-    private fun storeProps(p: Properties) {
-        try {
-            file.parentFile?.mkdirs()
-            // Atomic: temp + rename — как Preferences.save (см. там).
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.outputStream().use { p.store(it, "v2m presets (name = diff from engine defaults)") }
-            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        } catch (e: Exception) {
-            e.printStackTrace() // presets are best-effort; the app keeps working
-        }
-    }
+/** Хранилище пользовательских пресетов — properties-файл в каталоге данных
+ *  ([AppData.dir]; на desktop ~/.v2m, где уже лежат prefs.properties; на
+ *  Android — каталог файлов приложения). Ключ записи — имя пресета, значение —
+ *  закодированный дифф. Формат и доступ к файлу — [readProps]/[writeProps]
+ *  (этап 4в: общий код вместо java.util.Properties). */
+class PresetStore(private val path: String) {
 
     fun list(): List<Preset> {
-        val p = loadProps()
-        return p.stringPropertyNames().map { name ->
-            Preset(name, parseDiff(p.getProperty(name) ?: ""))
+        val p = readProps(path)
+        return p.keys.map { name ->
+            Preset(name, parseDiff(p[name] ?: ""))
         }.sortedBy { it.name }
     }
 
     /** Применить пресет [name]; null, если его нет. */
     fun load(name: String): Preset? {
-        val v = loadProps().getProperty(name) ?: return null
+        val v = readProps(path)[name] ?: return null
         return Preset(name, parseDiff(v))
     }
 
     /** Сохранить пресет (добавить или перезаписать существующее имя). */
     fun save(p: Preset) {
-        val props = loadProps()
-        props.setProperty(p.name, encodeDiff(p.diffs))
-        storeProps(props)
+        val props = readProps(path)
+        props[p.name] = encodeDiff(p.diffs)
+        writeProps(path, props, "v2m presets (name = diff from engine defaults)")
     }
 }
 
@@ -100,20 +77,17 @@ fun diffFromDefaults(params: V2mEngine.Params, keySel: Int, smoothingWindow: Int
     val defs = Preferences.paramsToProps(V2mEngine.Params.defaults(), 0, 1, 1)
     cur.remove("program"); defs.remove("program")
     val diff = LinkedHashMap<String, String>()
-    for (k in cur.stringPropertyNames().sorted()) {
-        val v = cur.getProperty(k)
-        if (v != defs.getProperty(k)) diff[k] = v
+    for (k in cur.keys.sorted()) {
+        val v = cur.getValue(k)
+        if (v != defs[k]) diff[k] = v
     }
     return diff
 }
 
 /** Параметры движка по пресету: дефолты + диффы (клампы те же, что в
  *  Preferences.load); program — текущий инструмент пользователя. */
-fun presetParams(p: Preset, currentProgram: Int): V2mEngine.Params {
-    val props = Properties()
-    p.diffs.forEach { (k, v) -> props.setProperty(k, v) }
-    return Preferences.paramsFromProps(props).copy(program = currentProgram)
-}
+fun presetParams(p: Preset, currentProgram: Int): V2mEngine.Params =
+    Preferences.paramsFromProps(p.diffs).copy(program = currentProgram)
 
 /** keySel пресета (0 = авто, дефолт). */
 fun presetKeySel(p: Preset): Int = p.diffs["keySel"]?.toIntOrNull()?.coerceIn(0, 24) ?: 0

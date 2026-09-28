@@ -18,6 +18,33 @@ object Platform {
     /** Новый захват микрофона: desktop — [NativeCapture] (ALSA через JNI),
      *  Android — AudioRecord (этап 5). */
     lateinit var newCapture: () -> AudioCapture
+
+    /** Файлы каталога данных приложения (этап 4в): prefs, presets, журнал,
+     *  временные файлы ядра. */
+    lateinit var storage: StorageService
+
+    /** Журнал отладки: desktop — перехваченный stdout (см. [Log]). */
+    lateinit var log: LogSink
+}
+
+/** Файловое хранилище приложения — единое место определения (этап 4в):
+ *  desktop работает с `java.io.File`, Android — с `File` под `filesDir`.
+ *  Пути — абсолютные строки ([dataPath]), общий код их не разбирает. */
+interface StorageService {
+    /** Содержимое файла; null — файла нет или прочитать не удалось. */
+    fun readBytes(path: String): ByteArray?
+
+    /** Записать файл (каталог создаётся). Бросает при ошибке. */
+    fun writeBytes(path: String, bytes: ByteArray)
+
+    /** Записать атомарно: временный файл рядом + переименование — обрыв
+     *  посередине не оставляет усечённый файл. Бросает при ошибке. */
+    fun writeAtomic(path: String, bytes: ByteArray)
+}
+
+/** Приёмник журнала: одна строка целиком (метка уже внутри). */
+fun interface LogSink {
+    fun append(line: String)
 }
 
 /** Файл, выбранный пользователем. [bytes] — содержимое целиком: у v2m

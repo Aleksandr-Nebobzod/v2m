@@ -1,11 +1,13 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
-// Android-приложение v2m (план docs/260921_android_plan.md, этап 1).
-// На данном этапе — каркас: проверка сборки и запуска без нативного ядра.
-// Общий код подключается из :shared (этап 1б), ядро libv2m.so — этап 2.
+// Android-приложение v2m (план docs/260921_android_plan.md, этапы 1–4).
+// Общий код — из :shared (этап 1б), ядро libv2m.so — этап 2, логика — этап 3,
+// интерфейс Compose — этап 4 (общий `App()` из :shared).
 plugins {
     id("com.android.application")
     kotlin("android")
+    id("org.jetbrains.compose")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // Номер билда — единое место определения в app/gradle.properties (оттуда же
@@ -31,6 +33,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    // Compose в приложении (этап 4г): экран — общий `App()` из :shared
+    buildFeatures {
+        compose = true
+    }
+
     compileSdkMinor = 1
     buildToolsVersion = "36.1.0"
     ndkVersion = "27.0.12077973"

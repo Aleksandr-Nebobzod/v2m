@@ -70,6 +70,40 @@ fun installAndroidPlatform(host: AndroidHost) {
     Platform.midi = AndroidMidiPlayback(app)
     Platform.wav = AndroidWavPlayback()
     Platform.newCapture = { AndroidCapture(host) }
+    Platform.storage = AndroidStorage
+    Platform.log = AndroidLog
+}
+
+/** Файлы каталога данных приложения: обычные `java.io.File` под `filesDir`
+ *  (каталог задаёт MainActivity через [AppData.setDir]) — это внутренние
+ *  файлы приложения, SAF для них не нужен. */
+private object AndroidStorage : StorageService {
+    override fun readBytes(path: String): ByteArray? =
+        runCatching { File(path).takeIf { it.isFile }?.readBytes() }.getOrNull()
+
+    override fun writeBytes(path: String, bytes: ByteArray) {
+        File(path).apply { parentFile?.mkdirs() }.writeBytes(bytes)
+    }
+
+    override fun writeAtomic(path: String, bytes: ByteArray) {
+        val f = File(path)
+        f.parentFile?.mkdirs()
+        val tmp = File(f.parentFile, f.name + ".tmp")
+        tmp.writeBytes(bytes)
+        // renameTo в пределах filesDir одной ФС; при сбое — прямая запись
+        if (!tmp.renameTo(f)) {
+            f.writeBytes(bytes)
+            tmp.delete()
+        }
+    }
+}
+
+/** Журнал Android: дописывает файл в каталоге данных. Перехвата stdout нет —
+ *  системный вывод приложения Android недоступен. */
+private object AndroidLog : LogSink {
+    override fun append(line: String) {
+        runCatching { File(dataPath("v2m-debug.log")).appendText(line + "\n") }
+    }
 }
 
 /** Открыть [target] во внешней программе ОС. Android открывает по `content://`

@@ -1,6 +1,5 @@
 package com.v2m.app
 
-import java.io.ByteArrayOutputStream
 
 /** Params as CLI options (for the report header). */
 fun paramsCli(p: V2mEngine.Params): String = buildString {
@@ -79,8 +78,8 @@ fun normalizeMidi(midi: ByteArray, muted: Set<Long> = emptySet(), pitchRange: In
     val ntrks = ((midi[10].toInt() and 0xFF) shl 8) or (midi[11].toInt() and 0xFF)
     if (ntrks == 0) return midi
 
-    val out = ByteArrayOutputStream()
-    out.write(midi, 0, 8 + hlen) // header unchanged
+    val out = ByteBuilder()
+    out.append(midi, 0, 8 + hlen) // header unchanged
 
     var p = 8 + hlen
     for (t in 0 until ntrks) {
@@ -92,7 +91,7 @@ fun normalizeMidi(midi: ByteArray, muted: Set<Long> = emptySet(), pitchRange: In
         p += 8
         val end = p + tlen
         if (end > midi.size) return midi
-        val body = ByteArrayOutputStream()
+        val body = ByteBuilder()
         val active = HashSet<Int>() // (channel shl 8) or pitch
         var running = 0
         var droppedDelta = 0 // tick distance of dropped events, paid forward to the next kept one
@@ -156,20 +155,20 @@ fun normalizeMidi(midi: ByteArray, muted: Set<Long> = emptySet(), pitchRange: In
                 writeVlq(body, delta + droppedDelta)
                 droppedDelta = 0
                 if (stPos == dataStart) { // running status: re-insert the full status
-                    body.write(st)
-                    body.write(midi, dataStart, p - dataStart)
+                    body.append(st)
+                    body.append(midi, dataStart, p - dataStart)
                 } else {
-                    body.write(midi, stPos, p - stPos)
+                    body.append(midi, stPos, p - stPos)
                 }
             }
         }
         writeVlq(body, droppedDelta) // delta-time before end-of-track
-        body.write(0xFF); body.write(0x2F); body.write(0x00)
-        out.write('M'.code); out.write('T'.code); out.write('r'.code); out.write('k'.code)
-        val len = body.size()
-        out.write((len shr 24) and 0xFF); out.write((len shr 16) and 0xFF)
-        out.write((len shr 8) and 0xFF); out.write(len and 0xFF)
-        out.write(body.toByteArray())
+        body.append(0xFF); body.append(0x2F); body.append(0x00)
+        out.append('M'.code); out.append('T'.code); out.append('r'.code); out.append('k'.code)
+        val len = body.size
+        out.append((len shr 24) and 0xFF); out.append((len shr 16) and 0xFF)
+        out.append((len shr 8) and 0xFF); out.append(len and 0xFF)
+        out.append(body.toByteArray())
         p = end
     }
     return out.toByteArray()
@@ -184,9 +183,9 @@ fun normalizeMidi(midi: ByteArray, muted: Set<Long> = emptySet(), pitchRange: In
  *  rests" across extra channels (приёмка #28, замечание 11). */
 fun midiWithMetaTrack(midi: ByteArray, json: String): ByteArray {
     val data = json.toByteArray(Charsets.UTF_8)
-    val body = ByteArrayOutputStream()
-    body.write(0x00) // delta-time of the first event in a track
-    body.write(0xFF); body.write(0x7F)
+    val body = ByteBuilder()
+    body.append(0x00) // delta-time of the first event in a track
+    body.append(0xFF); body.append(0x7F)
     var l = data.size
     val vlq = IntArray(4)
     var i = 3
@@ -197,25 +196,25 @@ fun midiWithMetaTrack(midi: ByteArray, json: String): ByteArray {
         vlq[i] = (l and 0x7F) or 0x80
         l = l shr 7
     }
-    for (k in i until 4) body.write(vlq[k])
-    body.write(data)
-    body.write(0x00) // delta-time before end-of-track
-    body.write(0xFF); body.write(0x2F); body.write(0x00) // end of track
+    for (k in i until 4) body.append(vlq[k])
+    body.append(data)
+    body.append(0x00) // delta-time before end-of-track
+    body.append(0xFF); body.append(0x2F); body.append(0x00) // end of track
 
-    val track = ByteArrayOutputStream()
-    track.write(0x4D); track.write(0x54); track.write(0x72); track.write(0x6B) // MTrk
-    val len = body.size()
-    track.write((len shr 24) and 0xFF); track.write((len shr 16) and 0xFF)
-    track.write((len shr 8) and 0xFF); track.write(len and 0xFF)
-    track.write(body.toByteArray())
+    val track = ByteBuilder()
+    track.append(0x4D); track.append(0x54); track.append(0x72); track.append(0x6B) // MTrk
+    val len = body.size
+    track.append((len shr 24) and 0xFF); track.append((len shr 16) and 0xFF)
+    track.append((len shr 8) and 0xFF); track.append(len and 0xFF)
+    track.append(body.toByteArray())
 
-    val out = ByteArrayOutputStream()
-    out.write(midi, 0, 10)
+    val out = ByteBuilder()
+    out.append(midi, 0, 10)
     val ntrks = ((midi[10].toInt() and 0xFF) shl 8) or (midi[11].toInt() and 0xFF)
-    out.write((ntrks + 1) shr 8)
-    out.write((ntrks + 1) and 0xFF)
-    out.write(midi, 12, midi.size - 12)
-    out.write(track.toByteArray())
+    out.append((ntrks + 1) shr 8)
+    out.append((ntrks + 1) and 0xFF)
+    out.append(midi, 12, midi.size - 12)
+    out.append(track.toByteArray())
     return out.toByteArray()
 }
 
@@ -231,7 +230,7 @@ private fun readVlq(b: ByteArray, from: Int): Int {
     }
 }
 
-private fun writeVlq(out: ByteArrayOutputStream, v0: Int) {
+private fun writeVlq(out: ByteBuilder, v0: Int) {
     var v = v0
     val bytes = IntArray(4)
     var i = 3
@@ -242,5 +241,5 @@ private fun writeVlq(out: ByteArrayOutputStream, v0: Int) {
         bytes[i] = (v and 0x7F) or 0x80
         v = v ushr 7
     }
-    for (k in i until 4) out.write(bytes[k])
+    for (k in i until 4) out.append(bytes[k])
 }

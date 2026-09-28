@@ -189,7 +189,7 @@ fun beatPos(qFromStart: Double, tsNum: Int, tsDen: Int): Triple<Int, String, Str
     val t16f = qFromStart * 4.0 // position in sixteenths (may be fractional)
     val n = Math.round(t16f).toInt()
     val approx = Math.abs(t16f - n) > 0.05
-    return Triple(n / perBar + 1, if (approx) "~" else "", "%02d/%02d".format(n % perBar, 16))
+    return Triple(n / perBar + 1, if (approx) "~" else "", "${zeroPad(n % perBar, 2)}/16")
 }
 
 /** Beat position (in quarters from the measure start) as the measures

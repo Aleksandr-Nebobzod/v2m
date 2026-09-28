@@ -1,16 +1,14 @@
 package com.v2m.app
 
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-
 /**
  * JNI bridge to the v2m native library (basicpitch/src/libv2m).
- * The library must be on java.library.path; see desktopApp build script.
+ * The library is loaded by [loadV2mLibrary] (этап 4в: desktop — java.library.path,
+ * см. build script desktopApp; Android — System.loadLibrary из APK).
  */
 object V2mEngine {
 
     init {
-        System.loadLibrary("v2m")
+        loadV2mLibrary()
     }
 
     /** Частота, на которой работает ядро (ресемпл внутри v2m_transcribe и
@@ -163,9 +161,8 @@ object V2mEngine {
             raw[2] == 'P'.code.toByte() && raw[3] == '1'.code.toByte()) {
             "spectrogram: неожиданный формат ответа (${raw.size} байт)"
         }
-        val head = ByteBuffer.wrap(raw, 4, 8).order(ByteOrder.BIG_ENDIAN)
-        val frames = head.int
-        val bands = head.int
+        val frames = int32BE(raw, 4)
+        val bands = int32BE(raw, 8)
         require(frames >= 0 && bands > 0 && raw.size == 12 + frames * bands) {
             "spectrogram: размер матрицы не совпал ($frames x $bands, ${raw.size} байт)"
         }

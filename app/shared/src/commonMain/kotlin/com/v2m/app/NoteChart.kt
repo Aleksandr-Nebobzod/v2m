@@ -29,7 +29,6 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
-import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -213,7 +212,7 @@ fun NoteChart(
                         // кромка столбика, 100 % = низ).
                         if (Log.DEBUG) {
                             val at = "x=${down.position.x.roundToInt()} y=${down.position.y.roundToInt()} " +
-                                "scroll=${scrollState.value} t=${"%.3f".format(Locale.ROOT, t)}"
+                                "scroll=${scrollState.value} t=${fmt(t, 3)}"
                             if (hit == null) {
                                 Log.d("tap", "$at → мимо: нет ноты, покрывающей клик")
                             } else {
@@ -221,8 +220,8 @@ fun NoteChart(
                                 val barPct = if (muted) -1 else ((t - hit.startSec) / (hit.endSec - hit.startSec) * 100).toInt()
                                 Log.d("tap", "$at → нота p=${hit.pitch} v=${hit.velocity}" +
                                     (if (muted) " (заглушена)" else "") +
-                                    " start=${"%.3f".format(Locale.ROOT, hit.startSec)} " +
-                                    "длит=${"%.3f".format(Locale.ROOT, hit.endSec - hit.startSec)} " +
+                                    " start=${fmt(hit.startSec, 3)} " +
+                                    "длит=${fmt(hit.endSec - hit.startSec, 3)} " +
                                     "клик: $barPct% от макушки столбика")
                             }
                         }

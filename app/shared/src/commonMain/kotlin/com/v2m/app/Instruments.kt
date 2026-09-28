@@ -1,6 +1,5 @@
 package com.v2m.app
 
-import java.io.ByteArrayOutputStream
 
 /** General MIDI Level 1 instruments, grouped by family; numbers shown 1..128
  *  (GM program numbers are 0..127 — subtract 1 when writing to MIDI). */
@@ -135,54 +134,54 @@ fun finalizeMidi(midi: ByteArray, tempoBpm: Double?, ts: Pair<Int, Int>?, key: K
         p += 8
         val end = p + tlen
         if (end > midi.size) return midi
-        val body = ByteArrayOutputStream()
+        val body = ByteBuilder()
         var running = 0
         while (p < end) {
             val deltaStart = p
             while (p < end && (midi[p].toInt() and 0x80) != 0) p++
             if (p >= end) break
             p++
-            body.write(midi, deltaStart, p - deltaStart)
+            body.append(midi, deltaStart, p - deltaStart)
             var st = midi[p].toInt() and 0xFF
-            if (st and 0x80 != 0) { p++; running = st; body.write(st) }
+            if (st and 0x80 != 0) { p++; running = st; body.append(st) }
             else { st = running; if (st == 0) break }
             if (st == 0xFF) {
                 if (p >= end) break
                 val mt = midi[p].toInt() and 0xFF; p++
-                body.write(mt)
+                body.append(mt)
                 var l = 0
                 while (p < end) {
                     val b = midi[p].toInt() and 0xFF; p++
-                    body.write(b)
+                    body.append(b)
                     l = (l shl 7) or (b and 0x7F)
                     if (b and 0x80 == 0) break
                 }
                 if (l < 0 || p + l > end) break
                 when {
                     mt == 0x51 && l >= 3 && tempoBytes != null && !tempoSeen -> {
-                        body.write(tempoBytes); p += l; tempoSeen = true
+                        body.append(tempoBytes); p += l; tempoSeen = true
                     }
                     mt == 0x58 && l >= 4 && sizeBytes != null && !sizeSeen -> {
-                        body.write(sizeBytes[0].toInt()); body.write(sizeBytes[1].toInt())
-                        body.write(midi, p + 2, l - 2); p += l; sizeSeen = true
+                        body.append(sizeBytes[0].toInt()); body.append(sizeBytes[1].toInt())
+                        body.append(midi, p + 2, l - 2); p += l; sizeSeen = true
                     }
                     mt == 0x59 && l >= 2 && keyBytes != null && !keySeen -> {
-                        body.write(keyBytes[0].toInt()); body.write(keyBytes[1].toInt())
+                        body.append(keyBytes[0].toInt()); body.append(keyBytes[1].toInt())
                         p += l; keySeen = true
                     }
-                    else -> { body.write(midi, p, l); p += l }
+                    else -> { body.append(midi, p, l); p += l }
                 }
                 if (mt == 0x2F) break
             } else if (st and 0xF0 == 0xF0) {
                 var l = 0
                 while (p < end) {
                     val b = midi[p].toInt() and 0xFF; p++
-                    body.write(b)
+                    body.append(b)
                     l = (l shl 7) or (b and 0x7F)
                     if (b and 0x80 == 0) break
                 }
                 if (l < 0 || p + l > end) break
-                body.write(midi, p, l); p += l
+                body.append(midi, p, l); p += l
             } else {
                 val data = when (st and 0xF0) {
                     0xC0, 0xD0 -> 1
@@ -190,7 +189,7 @@ fun finalizeMidi(midi: ByteArray, tempoBpm: Double?, ts: Pair<Int, Int>?, key: K
                     else -> 0
                 }
                 if (p + data > end) break
-                body.write(midi, p, data); p += data
+                body.append(midi, p, data); p += data
             }
         }
         tracks += body.toByteArray()
@@ -198,26 +197,26 @@ fun finalizeMidi(midi: ByteArray, tempoBpm: Double?, ts: Pair<Int, Int>?, key: K
     }
 
     // Missing events: prepend to the first track at tick 0.
-    val insert = ByteArrayOutputStream()
-    if (tempoBytes != null && !tempoSeen) { insert.write(0x00); insert.write(0xFF); insert.write(0x51); insert.write(0x03); insert.write(tempoBytes) }
-    if (sizeBytes != null && !sizeSeen) { insert.write(0x00); insert.write(0xFF); insert.write(0x58); insert.write(0x04); insert.write(sizeBytes); insert.write(0x18); insert.write(0x08) }
-    if (keyBytes != null && !keySeen) { insert.write(0x00); insert.write(0xFF); insert.write(0x59); insert.write(0x02); insert.write(keyBytes) }
+    val insert = ByteBuilder()
+    if (tempoBytes != null && !tempoSeen) { insert.append(0x00); insert.append(0xFF); insert.append(0x51); insert.append(0x03); insert.append(tempoBytes) }
+    if (sizeBytes != null && !sizeSeen) { insert.append(0x00); insert.append(0xFF); insert.append(0x58); insert.append(0x04); insert.append(sizeBytes); insert.append(0x18); insert.append(0x08) }
+    if (keyBytes != null && !keySeen) { insert.append(0x00); insert.append(0xFF); insert.append(0x59); insert.append(0x02); insert.append(keyBytes) }
     val prefix = insert.toByteArray()
 
-    val out = ByteArrayOutputStream()
-    out.write(midi, 0, 8 + hlen)
+    val out = ByteBuilder()
+    out.append(midi, 0, 8 + hlen)
     for ((t, data) in tracks.withIndex()) {
         val payload = if (t == 0 && prefix.isNotEmpty()) {
             ByteArray(prefix.size + data.size).also { nb ->
-                System.arraycopy(prefix, 0, nb, 0, prefix.size)
-                System.arraycopy(data, 0, nb, prefix.size, data.size)
+                prefix.copyInto(nb, 0, 0, prefix.size)
+                data.copyInto(nb, prefix.size, 0, data.size)
             }
         } else data
-        out.write(0x4D); out.write(0x54); out.write(0x72); out.write(0x6B) // MTrk
+        out.append(0x4D); out.append(0x54); out.append(0x72); out.append(0x6B) // MTrk
         val l = payload.size
-        out.write((l shr 24) and 0xFF); out.write((l shr 16) and 0xFF)
-        out.write((l shr 8) and 0xFF); out.write(l and 0xFF)
-        out.write(payload)
+        out.append((l shr 24) and 0xFF); out.append((l shr 16) and 0xFF)
+        out.append((l shr 8) and 0xFF); out.append(l and 0xFF)
+        out.append(payload)
     }
     return out.toByteArray()
 }
@@ -256,45 +255,45 @@ fun rewriteSample(midi: ByteArray, tempoBpm: Double? = null, shift: ((Int) -> In
         p += 8
         val end = p + tlen
         if (end > midi.size) return midi
-        val body = ByteArrayOutputStream()
+        val body = ByteBuilder()
         var running = 0
         while (p < end) {
             val deltaStart = p
             while (p < end && (midi[p].toInt() and 0x80) != 0) p++
             if (p >= end) break
             p++
-            body.write(midi, deltaStart, p - deltaStart)
+            body.append(midi, deltaStart, p - deltaStart)
             var st = midi[p].toInt() and 0xFF
-            if (st and 0x80 != 0) { p++; running = st; body.write(st) }
+            if (st and 0x80 != 0) { p++; running = st; body.append(st) }
             else { st = running; if (st == 0) break }
             if (st == 0xFF) {
                 if (p >= end) break
                 val mt = midi[p].toInt() and 0xFF; p++
-                body.write(mt)
+                body.append(mt)
                 var l = 0
                 while (p < end) {
                     val b = midi[p].toInt() and 0xFF; p++
-                    body.write(b)
+                    body.append(b)
                     l = (l shl 7) or (b and 0x7F)
                     if (b and 0x80 == 0) break
                 }
                 if (l < 0 || p + l > end) break
                 if (mt == 0x51 && tempoBytes != null && l >= 3) {
-                    body.write(tempoBytes); p += l; tempoSeen = true
+                    body.append(tempoBytes); p += l; tempoSeen = true
                 } else {
-                    body.write(midi, p, l); p += l
+                    body.append(midi, p, l); p += l
                 }
                 if (mt == 0x2F) break
             } else if (st and 0xF0 == 0xF0) {
                 var l = 0
                 while (p < end) {
                     val b = midi[p].toInt() and 0xFF; p++
-                    body.write(b)
+                    body.append(b)
                     l = (l shl 7) or (b and 0x7F)
                     if (b and 0x80 == 0) break
                 }
                 if (l < 0 || p + l > end) break
-                body.write(midi, p, l); p += l
+                body.append(midi, p, l); p += l
             } else {
                 val data = when (st and 0xF0) {
                     0xC0, 0xD0 -> 1
@@ -305,10 +304,10 @@ fun rewriteSample(midi: ByteArray, tempoBpm: Double? = null, shift: ((Int) -> In
                 val note = (st and 0xF0) == 0x80 || (st and 0xF0) == 0x90
                 if (shift != null && note) {
                     val pitch = midi[p].toInt() and 0xFF
-                    body.write(shift(pitch).coerceIn(0, 127))
-                    body.write(midi[p + 1].toInt() and 0xFF)
+                    body.append(shift(pitch).coerceIn(0, 127))
+                    body.append(midi[p + 1].toInt() and 0xFF)
                 } else {
-                    body.write(midi, p, data)
+                    body.append(midi, p, data)
                 }
                 p += data
             }
@@ -319,19 +318,19 @@ fun rewriteSample(midi: ByteArray, tempoBpm: Double? = null, shift: ((Int) -> In
 
     // A missing tempo event: prepend to the first track at tick 0.
     if (tempoBytes != null && !tempoSeen) {
-        val pre = ByteArrayOutputStream()
-        pre.write(0x00); pre.write(0xFF); pre.write(0x51); pre.write(0x03); pre.write(tempoBytes)
+        val pre = ByteBuilder()
+        pre.append(0x00); pre.append(0xFF); pre.append(0x51); pre.append(0x03); pre.append(tempoBytes)
         tracks[0] = pre.toByteArray() + tracks[0]
     }
 
-    val out = ByteArrayOutputStream()
-    out.write(midi, 0, 8 + hlen)
+    val out = ByteBuilder()
+    out.append(midi, 0, 8 + hlen)
     for (data in tracks) {
-        out.write(0x4D); out.write(0x54); out.write(0x72); out.write(0x6B) // MTrk
+        out.append(0x4D); out.append(0x54); out.append(0x72); out.append(0x6B) // MTrk
         val l = data.size
-        out.write((l shr 24) and 0xFF); out.write((l shr 16) and 0xFF)
-        out.write((l shr 8) and 0xFF); out.write(l and 0xFF)
-        out.write(data)
+        out.append((l shr 24) and 0xFF); out.append((l shr 16) and 0xFF)
+        out.append((l shr 8) and 0xFF); out.append(l and 0xFF)
+        out.append(data)
     }
     return out.toByteArray()
 }
@@ -384,7 +383,7 @@ fun patchProgram(midi: ByteArray, program: Int): ByteArray {
         p += 8
         val end = p + tlen
         if (end > midi.size) return midi
-        val body = ByteArrayOutputStream()
+        val body = ByteBuilder()
         var hasNotes = false
         var running = 0
         while (p < end) {
@@ -392,55 +391,55 @@ fun patchProgram(midi: ByteArray, program: Int): ByteArray {
             while (p < end && (midi[p].toInt() and 0x80) != 0) p++ // VLQ continuation bytes
             if (p >= end) break
             p++ // last delta byte (bit7 = 0)
-            body.write(midi, deltaStart, p - deltaStart)
+            body.append(midi, deltaStart, p - deltaStart)
             var st = midi[p].toInt() and 0xFF
-            if (st and 0x80 != 0) { p++; running = st; body.write(st) }
+            if (st and 0x80 != 0) { p++; running = st; body.append(st) }
             else { st = running; if (st == 0) break } // running status (status omitted)
             when (st and 0xF0) {
                 0x80, 0x90 -> {
                     if (p + 2 > end) break
                     if (st and 0xF0 == 0x90 && (midi[p + 1].toInt() and 0xFF) > 0) hasNotes = true
-                    body.write(midi, p, 2); p += 2
+                    body.append(midi, p, 2); p += 2
                 }
                 0xA0, 0xB0, 0xE0 -> {
                     if (p + 2 > end) break
-                    body.write(midi, p, 2); p += 2
+                    body.append(midi, p, 2); p += 2
                 }
                 0xC0, 0xD0 -> {
                     if (p >= end) break
-                    if (st and 0xF0 == 0xC0 && !replaced) { body.write(prog); replaced = true }
-                    else body.write(midi[p].toInt())
+                    if (st and 0xF0 == 0xC0 && !replaced) { body.append(prog); replaced = true }
+                    else body.append(midi[p].toInt())
                     p++
                 }
                 0xF0 -> {
                     if (st == 0xFF) { // meta event: type, VLQ length, data
                         if (p >= end) break
                         val mt = midi[p].toInt() and 0xFF; p++
-                        body.write(mt)
+                        body.append(mt)
                         var l = 0
                         while (p < end) {
                             val b = midi[p].toInt() and 0xFF; p++
-                            body.write(b)
+                            body.append(b)
                             l = (l shl 7) or (b and 0x7F)
                             if (l < 0 || b and 0x80 == 0) break // overflow or last length byte
                         }
                         if (l < 0 || p + l > end) break
-                        body.write(midi, p, l); p += l
+                        body.append(midi, p, l); p += l
                         if (mt == 0x2F) break
                     } else if (st == 0xF0 || st == 0xF7) { // sysex: VLQ length
                         var l = 0
                         while (p < end) {
                             val b = midi[p].toInt() and 0xFF; p++
-                            body.write(b)
+                            body.append(b)
                             l = (l shl 7) or (b and 0x7F)
                             if (l < 0 || b and 0x80 == 0) break
                         }
                         if (l < 0 || p + l > end) break
-                        body.write(midi, p, l); p += l
+                        body.append(midi, p, l); p += l
                     } else { // 0xF1..0xF6 system messages (fixed data length)
                         val extra = when (st) { 0xF1, 0xF3 -> 1; 0xF2 -> 2; else -> 0 }
                         if (p + extra > end) break
-                        body.write(midi, p, extra); p += extra
+                        body.append(midi, p, extra); p += extra
                     }
                 }
                 else -> break
@@ -451,20 +450,20 @@ fun patchProgram(midi: ByteArray, program: Int): ByteArray {
         p = end
     }
 
-    val out = ByteArrayOutputStream()
-    out.write(midi, 0, 8 + hlen) // header unchanged (incl. track count)
+    val out = ByteBuilder()
+    out.append(midi, 0, 8 + hlen) // header unchanged (incl. track count)
     for ((t, data) in tracks.withIndex()) {
         val payload = if (t == insertIdx) {
             ByteArray(data.size + 3).also { nb ->
                 nb[0] = 0x00; nb[1] = 0xC0.toByte(); nb[2] = prog.toByte()
-                System.arraycopy(data, 0, nb, 3, data.size)
+                data.copyInto(nb, 3, 0, data.size)
             }
         } else data
-        out.write(0x4D); out.write(0x54); out.write(0x72); out.write(0x6B) // MTrk
+        out.append(0x4D); out.append(0x54); out.append(0x72); out.append(0x6B) // MTrk
         val l = payload.size
-        out.write((l shr 24) and 0xFF); out.write((l shr 16) and 0xFF)
-        out.write((l shr 8) and 0xFF); out.write(l and 0xFF)
-        out.write(payload)
+        out.append((l shr 24) and 0xFF); out.append((l shr 16) and 0xFF)
+        out.append((l shr 8) and 0xFF); out.append(l and 0xFF)
+        out.append(payload)
     }
     return out.toByteArray()
 }
@@ -563,7 +562,7 @@ fun anacrusisMidi(midi: ByteArray, eighths: Int): ByteArray {
         if (events.isEmpty()) return midi
         // Rebuild: shift every FF58 delta by [shift]; the first FF58 gets an
         // opening partial signature inserted before it.
-        val body = ByteArrayOutputStream()
+        val body = ByteBuilder()
         for ((dStart, eEnd, isTs) in events) {
             val dLen = vlqLen(midi, dStart)
             var d = 0
@@ -573,13 +572,13 @@ fun anacrusisMidi(midi: ByteArray, eighths: Int): ByteArray {
                     firstTrack = t
                     // partial signature: N/8, 24 clocks, 8 32nds — the shape
                     // MuseScore renders as an anacrusis measure
-                    body.write(0x00); body.write(0xFF); body.write(0x58); body.write(0x04)
-                    body.write(eighths); body.write(0x03); body.write(0x18); body.write(0x08)
+                    body.append(0x00); body.append(0xFF); body.append(0x58); body.append(0x04)
+                    body.append(eighths); body.append(0x03); body.append(0x18); body.append(0x08)
                 }
                 writeVlq(body, d + shift)
-                body.write(midi, dStart + dLen, eEnd - dStart - dLen)
+                body.append(midi, dStart + dLen, eEnd - dStart - dLen)
             } else {
-                body.write(midi, dStart, eEnd - dStart)
+                body.append(midi, dStart, eEnd - dStart)
             }
         }
         trackBodies += body.toByteArray()
@@ -587,19 +586,19 @@ fun anacrusisMidi(midi: ByteArray, eighths: Int): ByteArray {
     }
     if (firstTrack < 0) return midi // no time signature: nothing to shift
 
-    val out = ByteArrayOutputStream()
-    out.write(midi, 0, 8 + hlen)
+    val out = ByteBuilder()
+    out.append(midi, 0, 8 + hlen)
     for ((t, data) in trackBodies.withIndex()) {
-        out.write(0x4D); out.write(0x54); out.write(0x72); out.write(0x6B) // MTrk
+        out.append(0x4D); out.append(0x54); out.append(0x72); out.append(0x6B) // MTrk
         val l = data.size
-        out.write((l shr 24) and 0xFF); out.write((l shr 16) and 0xFF)
-        out.write((l shr 8) and 0xFF); out.write(l and 0xFF)
-        out.write(data)
+        out.append((l shr 24) and 0xFF); out.append((l shr 16) and 0xFF)
+        out.append((l shr 8) and 0xFF); out.append(l and 0xFF)
+        out.append(data)
     }
     return out.toByteArray()
 }
 
-private fun writeVlq(out: ByteArrayOutputStream, v0: Int) {
+private fun writeVlq(out: ByteBuilder, v0: Int) {
     var v = v0
     val stack = ArrayList<Int>()
     stack.add(v and 0x7F)
@@ -608,5 +607,5 @@ private fun writeVlq(out: ByteArrayOutputStream, v0: Int) {
         stack.add((v and 0x7F) or 0x80)
         v = v ushr 7
     }
-    for (i in stack.indices.reversed()) out.write(stack[i])
+    for (i in stack.indices.reversed()) out.append(stack[i])
 }

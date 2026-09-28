@@ -1,6 +1,5 @@
 package com.v2m.app
 
-import java.io.ByteArrayOutputStream
 
 /** Правка высоты одной ноты SMF-файла (редактор «Тоны», билд #35):
  *  события NoteOn/NoteOff [pitch] канала [channel] с тиками в
@@ -30,8 +29,8 @@ fun retuneNoteMidi(
     val ntrks = ((midi[10].toInt() and 0xFF) shl 8) or (midi[11].toInt() and 0xFF)
     if (ntrks == 0) return midi
 
-    val out = ByteArrayOutputStream()
-    out.write(midi, 0, 8 + hlen) // header unchanged
+    val out = ByteBuilder()
+    out.append(midi, 0, 8 + hlen) // header unchanged
     var changed = false
 
     var p = 8 + hlen
@@ -44,7 +43,7 @@ fun retuneNoteMidi(
         p += 8
         val end = p + tlen
         if (end > midi.size) return midi
-        val body = ByteArrayOutputStream()
+        val body = ByteBuilder()
         var tick = 0L
         var running = 0
         var droppedDelta = 0 // tick distance of dropped bend events, paid forward
@@ -118,22 +117,22 @@ fun retuneNoteMidi(
                 writeVlq(body, delta + droppedDelta)
                 droppedDelta = 0
                 when {
-                    noteChanged -> { body.write(st); body.write(note0); body.write(note1) }
+                    noteChanged -> { body.append(st); body.append(note0); body.append(note1) }
                     stPos == dataStart -> { // running status: re-insert the full status
-                        body.write(st)
-                        body.write(midi, dataStart, p - dataStart)
+                        body.append(st)
+                        body.append(midi, dataStart, p - dataStart)
                     }
-                    else -> body.write(midi, stPos, p - stPos)
+                    else -> body.append(midi, stPos, p - stPos)
                 }
             }
         }
         writeVlq(body, droppedDelta) // delta-time before end-of-track
-        body.write(0xFF); body.write(0x2F); body.write(0x00)
-        out.write('M'.code); out.write('T'.code); out.write('r'.code); out.write('k'.code)
-        val len = body.size()
-        out.write((len shr 24) and 0xFF); out.write((len shr 16) and 0xFF)
-        out.write((len shr 8) and 0xFF); out.write(len and 0xFF)
-        out.write(body.toByteArray())
+        body.append(0xFF); body.append(0x2F); body.append(0x00)
+        out.append('M'.code); out.append('T'.code); out.append('r'.code); out.append('k'.code)
+        val len = body.size
+        out.append((len shr 24) and 0xFF); out.append((len shr 16) and 0xFF)
+        out.append((len shr 8) and 0xFF); out.append(len and 0xFF)
+        out.append(body.toByteArray())
         p = end
     }
     return if (changed) out.toByteArray() else midi
@@ -151,7 +150,7 @@ private fun readVlq(b: ByteArray, from: Int): Int {
     }
 }
 
-private fun writeVlq(out: ByteArrayOutputStream, v0: Int) {
+private fun writeVlq(out: ByteBuilder, v0: Int) {
     var v = v0
     val bytes = IntArray(4)
     var i = 3
@@ -162,5 +161,5 @@ private fun writeVlq(out: ByteArrayOutputStream, v0: Int) {
         bytes[i] = (v and 0x7F) or 0x80
         v = v ushr 7
     }
-    for (k in i until 4) out.write(bytes[k])
+    for (k in i until 4) out.append(bytes[k])
 }

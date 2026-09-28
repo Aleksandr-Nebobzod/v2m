@@ -68,7 +68,7 @@ object WavPlayer {
                 }
             }
             runCatching { l?.close() }
-            return Strings.playFailed.format(e.message)
+            return Strings.playFailed(e.message)
         }
     }
 

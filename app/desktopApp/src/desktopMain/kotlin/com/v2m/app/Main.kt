@@ -1,33 +1,42 @@
 package com.v2m.app
 
+import androidx.compose.ui.graphics.asSkiaBitmap
+import androidx.compose.ui.graphics.asSkiaPath
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.graphics.vector.VectorGroup
+import androidx.compose.ui.graphics.vector.VectorNode
+import androidx.compose.ui.graphics.vector.VectorPath
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.v2m.app.resources.Res
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.Properties
 import javax.sound.midi.MidiSystem
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-
-/** Связь `Window.onCloseRequest` ↔ `App()`: колбэк «закрывать ли окно?»
- *  ставит App() (билд #57, п.2в приёмки #56). [inProgress] — защита от
- *  повторного запроса: диалоги создаются без parent (не модальны), и клик
- *  «×» поверх открытого диалога дошёл бы до onCloseRequest вложенно. */
-internal class CloseGuard {
-    /** Спросить о несохранённой записи; [onProceed] — закрывать окно.
-     *  Этап 4б: вопрос задаёт Compose-диалог, ответ приходит позже —
-     *  поэтому колбэк с продолжением, а не синхронный Boolean. */
-    var confirm: ((onProceed: () -> Unit) -> Unit)? = null
-    var inProgress = false
-}
+import org.jetbrains.skia.Bitmap
+import org.jetbrains.skia.Canvas
+import org.jetbrains.skia.Paint
+import org.jetbrains.skia.Path
 
 fun main(args: Array<String>) {
     if (args.firstOrNull() == "--self-test") {
-        selfTest()
+        // --self-test [wav] [out dir]: пути можно задать — самотест идёт и вне
+        // рабочей области А.М. (автосборка, другая машина); умолчания прежние.
+        selfTest(args.getOrNull(1), args.getOrNull(2))
         return
     }
-    if (Log.DEBUG) Log.install() // журнал кликов тестирования (билд #33)
     installDesktopPlatform() // службы платформы — до первого кадра (этап 4б)
+    installDesktopLogTee() // журнал: stdout/err → файл + консоль (билд #33)
+    if (Log.DEBUG) Log.install() // заголовок сессии в журнале
     application {
         val closeGuard = CloseGuard()
         Window(
@@ -60,10 +69,10 @@ fun main(args: Array<String>) {
 @OptIn(ExperimentalResourceApi::class)
 private fun sampleResource(path: String): ByteArray = runBlocking { Res.readBytes(path) }
 
-/** Headless check of the full pipeline (no UI). Usage: --self-test <wav> [out dir] */
-private fun selfTest() {
-    val wav = File("/mnt/d/a/v2m/data/test4.wav")
-    val outDir = File("/tmp/v2m-selftest").apply { mkdirs() }
+/** Headless check of the full pipeline (no UI). Usage: --self-test [wav] [out dir] */
+private fun selfTest(wavPath: String? = null, outPath: String? = null) {
+    val wav = File(wavPath ?: "/mnt/d/a/v2m/data/test4.wav")
+    val outDir = File(outPath ?: System.getProperty("java.io.tmpdir") + "/v2m-selftest").apply { mkdirs() }
     val (pcm, sr) = try {
         readWavMono(wav)
     } catch (e: Exception) {
@@ -85,17 +94,239 @@ private fun selfTest() {
     check(wavDurationSec(wav) == expectSec) { "wavDurationSec(file): ${wavDurationSec(wav)} (ждали $expectSec)" }
     println("SELF-TEST: wav bytes round-trip ok (${encoded.size} байт, ${gotSec} с)")
 
+    // Этап 4в (шаг 1): сборка байтов общим кодом — ByteBuilder заменяет
+    // ByteArrayOutputStream в переносимых MIDI-модулях. Проба — известная
+    // последовательность: ASCII-заголовок, 32 бита старшими вперёд, байты
+    // VLQ (как writeVlq), 16 бит младшими вперёд.
+    val bb = ByteBuilder()
+    bb.appendAscii("MThd")
+    bb.appendI32BE(6)
+    bb.append(0x83); bb.append(0xFF)
+    bb.appendI16LE(-2)
+    val bbExpect = byteArrayOf(
+        0x4D, 0x54, 0x68, 0x64, 0, 0, 0, 6,
+        0x83.toByte(), 0xFF.toByte(), 0xFE.toByte(), 0xFF.toByte(),
+    )
+    check(bb.toByteArray().contentEquals(bbExpect)) {
+        "ByteBuilder: ${bb.toByteArray().joinToString(" ") { (it.toInt() and 0xFF).toString(16) }}"
+    }
+    check(
+        ByteBuilder().apply { append(byteArrayOf(1, 2, 3, 4), 1, 2) }
+            .toByteArray().contentEquals(byteArrayOf(2, 3))
+    ) { "ByteBuilder: срез append(bytes, offset, length)" }
+    println("SELF-TEST: ByteBuilder ok")
+
+    // Этап 4в (шаг 2): чтение целых из байтов — замена ByteBuffer. Фикстуры
+    // со знаковыми значениями; одна проба сверяется с ByteBuffer напрямую
+    // (JVM-эталон — доступен только в desktop-самотесте).
+    check(int16LE(byteArrayOf(0x00, 0x80.toByte()), 0) == -32768) { "int16LE: ${int16LE(byteArrayOf(0x00, 0x80.toByte()), 0)}" }
+    check(int16LE(byteArrayOf(0xFF.toByte(), 0x7F), 0) == 32767) { "int16LE max" }
+    check(int32LE(byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()), 0) == -1) { "int32LE -1" }
+    check(int32LE(byteArrayOf(9, 0x78, 0x56, 0x34, 0x12), 1) == 0x12345678) { "int32LE offset" }
+    check(int32BE(byteArrayOf(0x12, 0x34, 0x56, 0x78), 0) == 0x12345678) { "int32BE" }
+    check(int32BE(byteArrayOf(0x80.toByte(), 0x00, 0x00, 0x00), 0) == Int.MIN_VALUE) { "int32BE min" }
+    val refLE = ByteBuffer.wrap(byteArrayOf(0x78, 0x56, 0x34, 0x12)).order(ByteOrder.LITTLE_ENDIAN)
+    check(int32LE(refLE.array(), 0) == refLE.getInt(0)) { "int32LE vs ByteBuffer" }
+    val refBE = ByteBuffer.wrap(byteArrayOf(0x12, 0x34, 0x56, 0x78))
+    check(int32BE(refBE.array(), 0) == refBE.getInt(0)) { "int32BE vs ByteBuffer" }
+    println("SELF-TEST: Bytes ok")
+
+    // Этап 4в (шаг 3): форматирование чисел без локали — сверка с эталоном
+    // String.format по таблице значений и точностям (включая −0.0 и half-up).
+    val fmtValues = listOf(
+        0.0, 1.5, -2.5, 0.015, 3.14159, 12345.6789, 0.0001,
+        9.999, -0.04, -0.0, 2.675, 0.125, 100.0, -1234.5678,
+    )
+    for (v in fmtValues) {
+        for (d in 0..4) {
+            val got = fmt(v, d)
+            val exp = String.format(Locale.ROOT, "%.${d}f", v)
+            check(got == exp) { "fmt($v, $d) = $got, ждали $exp" }
+        }
+    }
+    check(fmtPad(1.5, 2, 7) == String.format(Locale.ROOT, "%7.2f", 1.5)) { "fmtPad 1.5" }
+    check(fmtPad(-1234.5678, 2, 7) == String.format(Locale.ROOT, "%7.2f", -1234.5678)) { "fmtPad -1234.5678" }
+    check(zeroPad(3, 2) == "03" && zeroPad(123, 2) == "123" && zeroPad(-1, 3) == "-01") {
+        "zeroPad: ${zeroPad(3, 2)} ${zeroPad(123, 2)} ${zeroPad(-1, 3)}"
+    }
+    println("SELF-TEST: Fmt ok (таблица ${fmtValues.size}×5 против String.format)")
+
+    // Этап 4в (шаг 4): формат java.util.Properties. Файлы prefs.properties и
+    // presets.properties уже лежат у пользователей — совместимость нужна в обе
+    // стороны, поэтому здесь JVM-эталон: наш store читается Properties.load,
+    // вывод Properties.store разбирается нашим parse; плюс побайтовая сверка
+    // строк данных и разбор фикстуры с продолжением строки и \uXXXX.
+    val propsMap = linkedMapOf(
+        "plain" to "value",
+        "my key" to " spaced ",
+        "k:v" to "a=b#c!d",
+        "кириллица" to "Привет, мир",
+        "emoji" to "нота \uD83C\uDFB5 ok",
+        "multi" to "первая\nвторая\tтаб",
+        "empty" to "",
+        "backslash" to "C:\\path\\to",
+    )
+    val javaProps = Properties()
+    javaProps.load(SimpleProps.store(propsMap, "v2m preferences").inputStream())
+    for ((k, v) in propsMap) {
+        check(javaProps.getProperty(k) == v) {
+            "Properties.load(SimpleProps.store): '$k' = '${javaProps.getProperty(k)}', ждали '$v'"
+        }
+    }
+    check(javaProps.size == propsMap.size) {
+        "Properties.load(SimpleProps.store): ключей ${javaProps.size}, ждали ${propsMap.size}"
+    }
+    val refOut = ByteArrayOutputStream()
+    Properties().apply { propsMap.forEach { (k, v) -> setProperty(k, v) } }.store(refOut, "v2m preferences")
+    val refBytes = refOut.toByteArray()
+    val refParsed = SimpleProps.parse(refBytes)
+    for ((k, v) in propsMap) {
+        check(refParsed[k] == v) {
+            "SimpleProps.parse(Properties.store): '$k' = '${refParsed[k]}', ждали '$v'"
+        }
+    }
+    check(refParsed.size == propsMap.size) {
+        "SimpleProps.parse(Properties.store): ключей ${refParsed.size}, ждали ${propsMap.size}"
+    }
+    // Порядок ключей у java.util.Properties (Hashtable) не определён — строки
+    // данных сверяются как множества.
+    fun dataLines(b: ByteArray): List<String> = b.toString(Charsets.ISO_8859_1)
+        .lines().filter { it.isNotEmpty() && !it.startsWith("#") }.sorted()
+    val oursLines = dataLines(SimpleProps.store(propsMap, "v2m preferences"))
+    check(oursLines == dataLines(refBytes)) {
+        "строки данных: наши\n${oursLines.joinToString("\n")}\nэталон\n${dataLines(refBytes).joinToString("\n")}"
+    }
+    // Фикстура — как её пишет Properties.store: комментарии, `\uXXXX`
+    // (кириллица и суррогатная пара), продолжение строки, разделители
+    // `= :` и пробел, экранированный пробел, escape-последовательности.
+    val fix = (
+        "#v2m preferences\n" +
+            "#Wed Sep 23 01:41:00 MSK 2026\n" +
+            "one=1\n" +
+            "two : 2\n" +
+            "three 3\n" +
+            "empty=\n" +
+            "my\\ key=\\ lead\n" +
+            "title=\\u041F\\u0440\\u0438\\u0432\\u0435\\u0442\n" +
+            "note=\\uD83C\\uDFB5\n" +
+            "long=abc\\\n" +
+            "     def\n" +
+            "esc=a\\tb\\nc\\\\d\n" +
+            "! bang comment\n" +
+            "  spaced = x y \n"
+        ).toByteArray(Charsets.ISO_8859_1)
+    val fixExp = linkedMapOf(
+        "one" to "1", "two" to "2", "three" to "3", "empty" to "",
+        "my key" to " lead", "title" to "Привет", "note" to "\uD83C\uDFB5",
+        "long" to "abcdef", "esc" to "a\tb\nc\\d", "spaced" to "x y ",
+    )
+    val fixGot = SimpleProps.parse(fix)
+    check(fixGot == fixExp) { "разбор фикстуры: $fixGot, ждали $fixExp" }
+    println("SELF-TEST: SimpleProps ok (совместимость с java.util.Properties в обе стороны, ${propsMap.size} ключей)")
+
+    // Этап 4в (шаг 5): expect/actual времени, каталога и загрузки библиотеки.
+    // Форматы сверяются с эталоном SimpleDateFormat (локаль ROOT) — маска
+    // имени записи должна совпадать с прежней в точности.
+    val stamps = listOf(0L, 1_000L, 1_699_999_999_999L, System.currentTimeMillis())
+    for (ms in stamps) {
+        val expStamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.ROOT).format(Date(ms))
+        check(formatLogStamp(ms) == expStamp) { "formatLogStamp($ms) = ${formatLogStamp(ms)}, ждали $expStamp" }
+        val expName = SimpleDateFormat("yyMMdd'_'HHmm'_v2m.wav'", Locale.ROOT).format(Date(ms))
+        check(formatRecName(ms) == expName) { "formatRecName($ms) = ${formatRecName(ms)}, ждали $expName" }
+        check(Regex("""\d{6}_\d{4}_v2m\.wav""").matches(formatRecName(ms))) { "формат имени записи: ${formatRecName(ms)}" }
+    }
+    check(nowEpochMillis() in (System.currentTimeMillis() - 5000)..(System.currentTimeMillis() + 5000)) {
+        "nowEpochMillis далеко от системного времени"
+    }
+    val expDir = File(System.getProperty("user.home") ?: ".", ".v2m").absolutePath
+    check(platformDefaultDataDir() == expDir) {
+        "platformDefaultDataDir() = ${platformDefaultDataDir()}, ждали $expDir"
+    }
+    check(AppData.dir == expDir) { "AppData.dir = ${AppData.dir}, ждали $expDir" }
+    loadV2mLibrary() // повторная загрузка уже загруженной библиотеки безопасна
+    println("SELF-TEST: Time/PlatformJvm ok (метки, имя записи, каталог данных, libv2m)")
+
+    // Этап 4в (шаг 6-7): службы платформы — файловое хранилище и журнал.
+    // Проба работает в отдельном каталоге /tmp, данных пользователя не трогает.
+    installDesktopPlatform()
+    check(dataPath("x") == AppData.dir + "/x") { "dataPath: ${dataPath("x")}" }
+    val stDir = File("/tmp/v2m-selftest/storage").apply { deleteRecursively(); mkdirs() }
+    val stFile = File(stDir, "probe.bin")
+    check(Platform.storage.readBytes(stFile.absolutePath) == null) { "readBytes отсутствующего файла" }
+    val payload = byteArrayOf(0, 1, 2, 0x7F, -1)
+    Platform.storage.writeBytes(stFile.absolutePath, payload)
+    check(Platform.storage.readBytes(stFile.absolutePath)?.contentEquals(payload) == true) { "writeBytes/readBytes" }
+    Platform.storage.writeAtomic(stFile.absolutePath, payload.reversedArray())
+    check(Platform.storage.readBytes(stFile.absolutePath)?.contentEquals(payload.reversedArray()) == true) { "writeAtomic" }
+    check(!File(stDir, "probe.bin.tmp").exists()) { "writeAtomic оставил временный файл" }
+    Platform.storage.writeAtomic(File(stDir, "nested/deep.bin").absolutePath, payload)
+    check(File(stDir, "nested/deep.bin").readBytes().contentEquals(payload)) { "writeAtomic создаёт каталоги" }
+    // Журнал: строка доходит до приёмника платформы (desktop — stdout)
+    Platform.log.append("SELF-TEST: журнал — проба приёмника (строка без метки)")
+    Log.d("selftest", "проба журнала")
+    println("SELF-TEST: Storage/Log ok (dataPath, readBytes, writeBytes, writeAtomic, журнал)")
+
+    // Этап 4в (шаг 8-9): строки интерфейса собираются функциями (Strings) —
+    // без String.format, чтобы тот же код работал вне JVM. Проба сверяет
+    // ключевые строки с эталоном String.format (в т.ч. строку таблицы нот).
+    check(Strings.menuMidiVolume(100) == "Громкость MIDI: 100 %") { Strings.menuMidiVolume(100) }
+    check(Strings.menuWavVolume(WAV_VOLUME_MAX) == "Громкость WAV: 100 %") { Strings.menuWavVolume(WAV_VOLUME_MAX) }
+    val fmtRow = { tilde: String, m: Int, frac: String, cell: String, d: Double, v: String ->
+        String.format(Locale.ROOT, "  %1s%02d:%s | %s | %7.2f | %3s", tilde, m, frac, cell, d, v)
+    }
+    val rowCases = listOf(
+        listOf("", 4, "04/16", "C4·1/8", 1.25, "90"),
+        listOf("~", 12, "09/16", "R·1/4", 0.0, ""),
+        listOf("", 100, "16/16", "A#3·3/2", 1234.5678, "127"),
+    )
+    for (c in rowCases) {
+        val exp = fmtRow(c[0] as String, c[1] as Int, c[2] as String, c[3] as String,
+            c[4] as Double, c[5] as String)
+        val got = Strings.notesRow(c[0] as String, c[1] as Int, c[2] as String, c[3] as String,
+            c[4] as Double, c[5] as String)
+        check(got == exp) { "notesRow: «$got», ждали «$exp»" }
+    }
+    check(
+        Strings.versionRow(1, 4, 4, 120.0, 12, ", C major", ", 98% гарм.", "test.wav") ==
+            String.format(Locale.ROOT, "В.%02d — %d/%d, %.1f BPM, %d нот%s%s, %s",
+                1, 4, 4, 120.0, 12, ", C major", ", 98% гарм.", "test.wav")
+    ) { "versionRow: ${Strings.versionRow(1, 4, 4, 120.0, 12, ", C major", ", 98% гарм.", "test.wav")}" }
+    check(
+        Strings.tempoLine(95.5, 3, 4, 7) ==
+            String.format(Locale.ROOT, "темп: %.2f BPM, размер %d/%d, нот: %d, L=1/8", 95.5, 3, 4, 7)
+    ) { "tempoLine: ${Strings.tempoLine(95.5, 3, 4, 7)}" }
+    check(
+        Strings.modeFitLine("C major", 100, 30, 0.9) ==
+            String.format(Locale.ROOT, "подбор лада: %s, %d%% нот в пределах %d центов, сила притягивания %.1f",
+                "C major", 100, 30, 0.9)
+    ) { "modeFitLine: ${Strings.modeFitLine("C major", 100, 30, 0.9)}" }
+    check(
+        Strings.chartTScale(3.0f) == String.format(Locale.ROOT, "t-масштаб: %.1f с", 3.0f)
+    ) { "chartTScale: ${Strings.chartTScale(3.0f)}" }
+    check(
+        Strings.sumStable(93.4) == String.format(Locale.ROOT, "стабильность %.0f%%", 93.4)
+    ) { "sumStable: ${Strings.sumStable(93.4)}" }
+    check(Strings.recCountdownCd(2) == "Запуск записи через 2… (нажмите — отменить)") { Strings.recCountdownCd(2) }
+    check(Strings.versionNoResult(3) == "В.03 (нет результата)") { Strings.versionNoResult(3) }
+    check(Strings.recOverwriteAsk("a.wav") == "Файл «a.wav» уже существует.\nЗаменить его?") { Strings.recOverwriteAsk("a.wav") }
+    println("SELF-TEST: Strings ok (строки-функции против String.format-эталона)")
+
     // Билд #43: проба JNI-слоя записи. JNI-символы резолвятся лениво — без
     // пробы устаревшая libv2m.so прошла бы самотест и упала бы при живой
     // записи (UnsatisfiedLinkError). Заодно доказывает влинкованный asound.
-    val captureProbe = try {
-        NativeCapture().selftest()
-    } catch (e: UnsatisfiedLinkError) {
-        throw IllegalStateException(
-            "libv2m.so устарела: пересоберите basicpitch/src/libv2m (JNI захвата отсутствует)", e)
+    // Windows собирается без захвата — там проба пропускается.
+    if (NativeCapture.SUPPORTED) {
+        val captureProbe = try {
+            NativeCapture().selftest()
+        } catch (e: UnsatisfiedLinkError) {
+            throw IllegalStateException(
+                "libv2m.so устарела: пересоберите basicpitch/src/libv2m (JNI захвата отсутствует)", e)
+        }
+        println("SELF-TEST: capture probe: $captureProbe")
+        check(captureProbe.startsWith("alsa-ok")) { "capture selftest: $captureProbe" }
+    } else {
+        println("SELF-TEST: capture probe: пропущена (сборка без захвата — Windows)")
     }
-    println("SELF-TEST: capture probe: $captureProbe")
-    check(captureProbe.startsWith("alsa-ok")) { "capture selftest: $captureProbe" }
 
     // Presets (замечание 2): factory presets live in code as a named diff
     // from the engine defaults; «02 нормальный» = empty diff. The user
@@ -117,7 +348,7 @@ private fun selfTest() {
     // Saving the current settings keeps only keys that differ from the
     // defaults (no program — the instrument is a separate user choice).
     val tuned = def.copy(onsetThreshold = 0.33f, quantize = 2)
-    val store = PresetStore(File(outDir, "presets-test.properties"))
+    val store = PresetStore(File(outDir, "presets-test.properties").path)
     store.save(Preset("мой тест", diffFromDefaults(tuned, 7, 9, 5)))
     val loaded = store.load("мой тест")
     check(loaded != null) { "store load after save" }
@@ -130,6 +361,59 @@ private fun selfTest() {
     check(store.list().size == 1 && store.load("мой тест")?.diffs?.isEmpty() == true) { "store upsert: ${store.list()}" }
     check(store.load("нет такого") == null) { "store miss must be null" }
     println("SELF-TEST: presets: " + FACTORY_PRESETS.joinToString { it.name } + " + store ok")
+
+    // Этап 4в (шаг 17): prefs — общий код (SimpleProps вместо
+    // java.util.Properties, Platform.storage вместо java.io.File). Файлы
+    // prefs.properties уже лежат у пользователей, поэтому проба пишет в
+    // отдельный каталог и сверяет результат с JVM-эталоном: наш файл читается
+    // java.util.Properties (в т.ч. кириллица — \uXXXX-экранирование), обратно —
+    // Preferences.load() возвращает то же; временного файла после атомарной
+    // записи не остаётся.
+    val prefsDir = File(outDir, "prefs-test").apply { deleteRecursively(); mkdirs() }
+    val prevDataDir = AppData.dir
+    AppData.setDir(prefsDir.path)
+    val probeParams = def.copy(onsetThreshold = 0.42f, quantize = 3, timeSigNum = 4, timeSigDen = 4)
+    Preferences.save(
+        probeParams, 7, 9, 5, 21, 1, 2, true, 90, 40,
+        mapOf("a" to true, "b" to false), true, false, 2, Gamma.DEFAULT.id, "musicxml",
+        "А.М.", "мой пресет", 4.5f, 30, 100, "/tmp/a.wav", "/tmp/b.mid", "/tmp/c.xml",
+    )
+    val prefsPath = dataPath("prefs.properties")
+    check(File(prefsPath).isFile) { "prefs: файл не записан ($prefsPath)" }
+    check(!File(prefsDir, "prefs.properties.tmp").exists()) { "prefs: остался временный файл" }
+    val jvmPrefs = Properties()
+    File(prefsPath).inputStream().use { jvmPrefs.load(it) }
+    check(File(prefsPath).readBytes().all { it.toInt() in 0..0x7F }) { "prefs: файл не чистый ASCII" }
+    check(jvmPrefs.getProperty("onsetThreshold") == "0.42") {
+        "prefs (java.util.Properties): onsetThreshold = ${jvmPrefs.getProperty("onsetThreshold")}"
+    }
+    check(jvmPrefs.getProperty("author") == "А.М." && jvmPrefs.getProperty("presetName") == "мой пресет") {
+        "prefs (java.util.Properties): кириллица = '${jvmPrefs.getProperty("author")}'/'${jvmPrefs.getProperty("presetName")}'"
+    }
+    val loadedPrefs = Preferences.load()
+    check(loadedPrefs.params == probeParams) { "prefs round-trip: ${loadedPrefs.params}" }
+    check(loadedPrefs.keySel == 7 && loadedPrefs.smoothingWindow == 9 && loadedPrefs.pitchMedianWindow == 5) {
+        "prefs round-trip: keySel=${loadedPrefs.keySel} smoothing=${loadedPrefs.smoothingWindow} pitchMedian=${loadedPrefs.pitchMedianWindow}"
+    }
+    check(loadedPrefs.instrument == 21 && loadedPrefs.clef == 1 && loadedPrefs.anacrusis == 2 &&
+        loadedPrefs.listenExternal && loadedPrefs.midiVolume == 90 && loadedPrefs.wavVolume == 40) {
+        "prefs round-trip: instrument/clef/anacrusis/громкости = ${loadedPrefs.instrument}/${loadedPrefs.clef}/${loadedPrefs.anacrusis}/${loadedPrefs.midiVolume}/${loadedPrefs.wavVolume}"
+    }
+    check(loadedPrefs.sections == mapOf("a" to true, "b" to false) && loadedPrefs.darkTheme &&
+        !loadedPrefs.showAbc && loadedPrefs.notesTab == 2) {
+        "prefs round-trip: секции/тема/вкладка = ${loadedPrefs.sections} ${loadedPrefs.darkTheme} ${loadedPrefs.showAbc} ${loadedPrefs.notesTab}"
+    }
+    check(loadedPrefs.exportFmt == "musicxml" && loadedPrefs.author == "А.М." &&
+        loadedPrefs.presetName == "мой пресет" && loadedPrefs.tScale == 4.5f) {
+        "prefs round-trip: exportFmt/author/preset/tScale = ${loadedPrefs.exportFmt}/${loadedPrefs.author}/${loadedPrefs.presetName}/${loadedPrefs.tScale}"
+    }
+    check(loadedPrefs.pitchLo == 30 && loadedPrefs.pitchHi == 100 &&
+        loadedPrefs.lastWav == "/tmp/a.wav" && loadedPrefs.lastMidi == "/tmp/b.mid" &&
+        loadedPrefs.lastXml == "/tmp/c.xml") {
+        "prefs round-trip: фильтр нот/последние файлы = ${loadedPrefs.pitchLo}-${loadedPrefs.pitchHi} ${loadedPrefs.lastWav}"
+    }
+    AppData.setDir(prevDataDir) // дальше — прежний каталог данных
+    println("SELF-TEST: prefs round-trip ok (java.util.Properties читает наш файл)")
 
     // Билд #47: проба JNI-слоя спектрограммы (вкладка «Спектр»). Тем же
     // кодом, что рисует вкладка, сохраняется PNG — проверка палитры и
@@ -144,7 +428,7 @@ private fun selfTest() {
     val specNonZero = (0 until spec.frames).sumOf { f -> (0 until spec.bands).count { b -> spec[f, b] > 0 } }
     val specBmp = spectrogramBitmap(spec, gammaPalette(Gamma.DEFAULT)) ?: error("spectrogram bitmap failed")
     val specPng = File(outDir, "spectrogram.png")
-    org.jetbrains.skia.Image.makeFromBitmap(specBmp)
+    org.jetbrains.skia.Image.makeFromBitmap(specBmp.asSkiaBitmap())
         .encodeToData(org.jetbrains.skia.EncodedImageFormat.PNG)?.let { specPng.writeBytes(it.bytes) }
     println("SELF-TEST: spectrogram ${spec.frames}x${spec.bands} max=$specMax nonzero=$specNonZero -> ${specPng.name}")
     check(spec.frames > 0 && spec.bands == 120) { "spectrogram shape: ${spec.frames}x${spec.bands}" }
@@ -249,7 +533,7 @@ private fun selfTest() {
         V2mEngine.SAMPLE_RATE) ?: error("spectrogram(fx) failed")
     val fxBmp = spectrogramBitmap(fxSpec, gammaPalette(Gamma.DEFAULT)) ?: error("fx bitmap failed")
     val fxPng = File(outDir, "spectrogram-fx.png")
-    org.jetbrains.skia.Image.makeFromBitmap(fxBmp)
+    org.jetbrains.skia.Image.makeFromBitmap(fxBmp.asSkiaBitmap())
         .encodeToData(org.jetbrains.skia.EncodedImageFormat.PNG)?.let { fxPng.writeBytes(it.bytes) }
     println("SELF-TEST: спектрограмма с эффектами ${fxSpec.frames}x${fxSpec.bands} -> ${fxPng.name}")
 
@@ -312,10 +596,6 @@ private fun selfTest() {
         "MIDI volume: 100/127 % должны давать CC7 100/127" }
     check(MidiPlayer.volumeCcFor(200) == 127 && MidiPlayer.volumeCcFor(-5) == 0) {
         "MIDI volume: крайние значения не поджаты" }
-    check(String.format(Locale.ROOT, Strings.menuMidiVolume, 100) == "Громкость MIDI: 100 %") {
-        "метка громкости MIDI: неверный формат — " +
-            String.format(Locale.ROOT, Strings.menuMidiVolume, 100)
-    }
     // Живой синтезатор: CC7 ставится всем каналам и читается назад (ноты не
     // играются — контроль громкости без звука; нет синтезатора — не ошибка)
     val volProbe = runCatching {
@@ -329,17 +609,13 @@ private fun selfTest() {
     println("SELF-TEST: аттенюатор на синтезаторе: CC7 после 127 → " +
         (volProbe.getOrNull()?.joinToString() ?: "нет синтезатора: ${volProbe.exceptionOrNull()?.message}"))
     volProbe.getOrNull()?.let { check(it == listOf(127)) { "CC7 не применился ко всем каналам: $it" } }
-    println("SELF-TEST: громкость MIDI «" + String.format(Locale.ROOT, Strings.menuMidiVolume, 100) +
+    println("SELF-TEST: громкость MIDI «" + Strings.menuMidiVolume(100) +
         "», CC7 для 0/100/127/200 % = " +
         "${MidiPlayer.volumeCcFor(0)}/${MidiPlayer.volumeCcFor(100)}/" +
         "${MidiPlayer.volumeCcFor(127)}/${MidiPlayer.volumeCcFor(200)}")
 
     // Билд #53 (п.1 приёмки #52): регистр громкости WAV 0..100 = 0..25 %
     // усиления записи (WavPlayer.volume = регистр / WAV_VOLUME_DIVISOR)
-    check(String.format(Locale.ROOT, Strings.menuWavVolume, WAV_VOLUME_MAX) == "Громкость WAV: 100 %") {
-        "метка громкости WAV: неверный формат — " +
-            String.format(Locale.ROOT, Strings.menuWavVolume, WAV_VOLUME_MAX)
-    }
     println("SELF-TEST: громкость WAV: регистр 0..$WAV_VOLUME_MAX → усиление 0.." +
         "${WAV_VOLUME_MAX / WAV_VOLUME_DIVISOR} (100 = 25 %)")
     // Миграция шкалы prefs: старая 0..200 (проценты усиления) → регистр
@@ -825,6 +1101,30 @@ private fun selfTest() {
     val abcFile = File(outDir, "test4.abc")
     abcFile.writeText(abc)
     println("SELF-TEST: ${abcFile.name} bytes=${abcFile.length()}")
+
+    // Иконки интерфейса (2026-09-23): SVG-ресурсы заменены на ImageVector в
+    // общем коде — Android не умеет SVG (`svgPainter` падал на первом кадре).
+    // Сверка попиксельная: растр иконки (данные пути разбирает Compose)
+    // против растра исходного SVG (его разбирает парсер самого Skia).
+    val iconList = listOf(
+        "menu" to Icons.Menu,
+        "metronome" to Icons.Metronome,
+        "music_note_2" to Icons.MusicNote,
+        "play" to Icons.Play,
+        "stop" to Icons.Stop,
+    )
+    val iconChecks = iconList.map { (name, icon) -> name to iconProbe(name, icon) }
+    for ((name, r) in iconChecks) {
+        check(r.diffFrac <= 0.02) { "иконка $name: расхождение с SVG ${r.diffFrac * 100} % пикселей" }
+        check(r.iconInk >= 0.02) { "иконка $name: отрисовка пуста (покрытие ${r.iconInk})" }
+        check(kotlin.math.abs(r.iconInk - r.svgInk) <= 0.02) {
+            "иконка $name: покрытие ${r.iconInk} против ${r.svgInk} у SVG" }
+    }
+    println("SELF-TEST: иконки ok (" + iconChecks.size + " шт., макс. расхождение с SVG " +
+        String.format(Locale.ROOT, "%.2f", iconChecks.maxOf { it.second.diffFrac } * 100) +
+        " % пикселей, покрытие " +
+        String.format(Locale.ROOT, "%.1f..%.1f", iconChecks.minOf { it.second.iconInk } * 100,
+            iconChecks.maxOf { it.second.iconInk } * 100) + " %)")
 }
 
 /** A real transcription for the notes-table example. The worktree has no
@@ -873,4 +1173,123 @@ private fun printNotesExample() {
                 tilde, measure, frac, cell, r.endSec - r.startSec, vel))
         }
     }
+}
+
+/** WAV по пути — только для самотеста (этап 4в, шаг 15): общий код работает
+ *  байтами ([readWavMono]); на desktop файл читается здесь. */
+private fun readWavMono(file: File): Pair<FloatArray, Int> = readWavMono(file.readBytes())
+
+/** Длительность WAV в секундах по пути — читается только заголовок
+ *  ([wavDurationSec] по байтам — общий код); эталон файлового чтения
+ *  в самотесте. Этап 4в, шаг 15. */
+private fun wavDurationSec(file: File): Int? {
+    return try {
+        RandomAccessFile(file, "r").use { raf ->
+            // 12 байт — под шапку RIFF/WAVE целиком (8 не хватало: readFully
+            // на 12 байт бросал IndexOutOfBounds, исключение глушилось и
+            // функция возвращала null — поймано самотестом, этап 4б)
+            val bb = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
+            fun readTag(): String {
+                raf.readFully(bb.array(), 0, 4)
+                return String(bb.array(), 0, 4, Charsets.US_ASCII)
+            }
+            fun readInt(): Int {
+                raf.readFully(bb.array(), 0, 4)
+                return bb.getInt(0)
+            }
+            raf.readFully(bb.array(), 0, 12)
+            if (String(bb.array(), 0, 4, Charsets.US_ASCII) != "RIFF" ||
+                String(bb.array(), 8, 4, Charsets.US_ASCII) != "WAVE"
+            ) return@use null
+            var byteRate = 0 // fmt ещё не встречен — данные до него не считать
+            while (raf.filePointer + 8 <= raf.length()) {
+                val id = readTag()
+                val len = readInt()
+                if (id == "fmt ") {
+                    // byteRate лежит на +8 от начала данных чанка (после
+                    // audioFormat, channels, sampleRate); указатель после
+                    // чтения возвращается на начало данных — иначе сдвиг в
+                    // конце цикла отсчитывается от прочитанного byteRate и
+                    // чанк data пропускается
+                    val chunkData = raf.filePointer
+                    raf.seek(chunkData + 8)
+                    byteRate = readInt()
+                    raf.seek(chunkData)
+                } else if (id == "data") {
+                    return@use if (byteRate > 0) len / byteRate else null
+                }
+                raf.seek(raf.filePointer + len + (len and 1)) // паддинг до чётной границы
+            }
+            null
+        }
+    } catch (e: Exception) {
+        null
+    }
+}
+
+/** Viewport иконок ([Icons]): viewBox Material Symbols `0 -960 960 960`. */
+private const val ICON_VIEWPORT = 960f
+
+/** Итог сверки иконки с исходным SVG: доля расходящихся пикселей и покрытие
+ *  (доля закрашенных) — у иконки и у эталонного растра SVG. */
+private data class IconProbe(val diffFrac: Double, val iconInk: Double, val svgInk: Double)
+
+/** Сверить иконку [icon] с её исходным SVG `drawable/[name].svg`: обе кривые
+ *  рисуются в один размер и сравниваются по альфе (заливка в обеих чёрная).
+ *  Данные пути берутся из ресурса — так проверяются и сам файл, и перенос
+ *  в [Icons] (включая сдвиг по Y: viewBox начинается с -960). */
+@OptIn(ExperimentalResourceApi::class)
+private fun iconProbe(name: String, icon: ImageVector, size: Int = 64): IconProbe {
+    val svg = runBlocking { Res.readBytes("drawable/$name.svg") }.toString(Charsets.UTF_8)
+    val d = Regex("<path d=\"([^\"]+)\"").find(svg)?.groupValues?.get(1)
+        ?: error("$name.svg: не найдены данные пути")
+    val iconBmp = iconRaster(icon, size)
+    val svgBmp = svgRaster(d, size)
+    var diff = 0
+    var inkIcon = 0
+    var inkSvg = 0
+    for (y in 0 until size) for (x in 0 until size) {
+        val a = (iconBmp.getColor(x, y) ushr 24) and 0xFF
+        val b = (svgBmp.getColor(x, y) ushr 24) and 0xFF
+        if (kotlin.math.abs(a - b) > 32) diff++
+        if (a > 128) inkIcon++
+        if (b > 128) inkSvg++
+    }
+    val total = (size * size).toDouble()
+    return IconProbe(diff / total, inkIcon / total, inkSvg / total)
+}
+
+/** Растр иконки: обход векторного дерева с накоплением сдвигов групп — то же,
+ *  что делает Compose при отрисовке [ImageVector]. */
+private fun iconRaster(icon: ImageVector, size: Int): Bitmap {
+    val bitmap = Bitmap().apply { allocN32Pixels(size, size) }
+    val canvas = Canvas(bitmap)
+    canvas.scale(size / ICON_VIEWPORT, size / ICON_VIEWPORT)
+    val paint = Paint().apply { color = 0xFF000000.toInt(); isAntiAlias = true }
+    fun walk(node: VectorNode, dx: Float, dy: Float) {
+        when (node) {
+            is VectorPath -> {
+                canvas.save()
+                canvas.translate(dx, dy)
+                canvas.drawPath(PathParser().addPathNodes(node.pathData).toPath().asSkiaPath(), paint)
+                canvas.restore()
+            }
+            is VectorGroup -> node.forEach { walk(it, dx + node.translationX, dy + node.translationY) }
+            else -> error("иконка: неизвестный узел ${node::class.simpleName}")
+        }
+    }
+    walk(icon.root, 0f, 0f)
+    return bitmap
+}
+
+/** Растр данных пути SVG [d] — эталон: путь разбирает парсер SVG самого Skia
+ *  (независимо от Compose), сдвиг по Y тот же, что в [Icons]. */
+private fun svgRaster(d: String, size: Int): Bitmap {
+    val bitmap = Bitmap().apply { allocN32Pixels(size, size) }
+    val canvas = Canvas(bitmap)
+    canvas.scale(size / ICON_VIEWPORT, size / ICON_VIEWPORT)
+    canvas.translate(0f, ICON_VIEWPORT) // viewBox начинается с -960
+    canvas.drawPath(Path.makeFromSVGString(d),
+        Paint().apply { color = 0xFF000000.toInt(); isAntiAlias = true })
+    return bitmap
 }

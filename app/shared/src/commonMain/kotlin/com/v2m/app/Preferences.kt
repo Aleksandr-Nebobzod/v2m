@@ -1,10 +1,5 @@
 package com.v2m.app
 
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-import java.util.Properties
-
 /** Нижние границы «Ритмики» (замечание А.М. 2026-09-06): мин. длина ноты
  *  от 99 мс, тремоло от 50 мс — ограничение разрешения демонстрации
  *  (гистограмма не показывает микро-детали). Движок считает кадрами
@@ -67,7 +62,7 @@ fun pitchMedianFromStored(stored: Int): Int = (stored or 1).coerceIn(1, 7)
  *  the desktop equivalent of Android SharedPreferences, without extra
  *  dependencies. */
 object Preferences {
-    private val file: File get() = File(AppData.dir, "prefs.properties")
+    private val path: String get() = dataPath("prefs.properties")
 
     data class Loaded(
         val params: V2mEngine.Params,
@@ -97,14 +92,13 @@ object Preferences {
     )
 
     fun load(): Loaded {
-        val p = Properties()
-        if (file.isFile) runCatching { file.inputStream().use(p::load) }
+        val p = readProps(path)
         // Values are clamped — the file may be edited by hand.
         fun f(k: String, d: Float, lo: Float = 0f, hi: Float = 1f) =
-            (p.getProperty(k)?.toFloatOrNull() ?: d).coerceIn(lo, hi)
+            (p[k]?.toFloatOrNull() ?: d).coerceIn(lo, hi)
         fun i(k: String, d: Int, lo: Int = 0, hi: Int = Int.MAX_VALUE) =
-            (p.getProperty(k)?.toIntOrNull() ?: d).coerceIn(lo, hi)
-        fun b(k: String, d: Boolean) = p.getProperty(k)?.toBooleanStrictOrNull() ?: d
+            (p[k]?.toIntOrNull() ?: d).coerceIn(lo, hi)
+        fun b(k: String, d: Boolean) = p[k]?.toBooleanStrictOrNull() ?: d
         // Громкость WAV (билд #53): файлы старой шкалы (проценты усиления
         // 0..200) переводятся в регистр 0..100 однократно — × 4 с клампом.
         val wavScale = i(WAV_VOLUME_SCALE_KEY, 1, 1, WAV_VOLUME_SCALE)
@@ -117,7 +111,7 @@ object Preferences {
             // значение не мигрируется
             smoothingWindow = smoothingFromStored(i("smoothingWindow", 1, 1, 15)),
             pitchMedianWindow = pitchMedianFromStored(i("pitchMedianWindow", 1, 1, 7)),
-            instrument = p.getProperty("instrument")?.toIntOrNull()?.coerceIn(1, 128),
+            instrument = p["instrument"]?.toIntOrNull()?.coerceIn(1, 128),
             clef = i("clef", 0, 0, 1),
             anacrusis = i("anacrusis", 0, 0, 8),
             listenExternal = b("listenExternal", false),
@@ -125,36 +119,36 @@ object Preferences {
             midiVolume = i("midiVolume", 100, 0, 127),
             // Регистр 0..100 = 0..25 % усиления (100 → WavPlayer.volume = 0.25)
             wavVolume = wavVolumeFromStored(wavStored, wavScale),
-            sections = p.stringPropertyNames()
+            sections = p.keys
                 .filter { it.startsWith(SECTION_PREFIX) }
                 .associate { it.removePrefix(SECTION_PREFIX) to b(it, true) },
             darkTheme = b("darkTheme", false),
             showAbc = b("showAbc", true),
             notesTab = i("notesTab", NOTES_TAB_DEFAULT, 0, 3),
-            gamma = Gamma.byId(p.getProperty("gamma")).id,
-            exportFmt = p.getProperty("exportFmt")?.takeIf { it in EXPORT_FORMATS } ?: "mid",
-            author = p.getProperty("author") ?: "",
-            presetName = p.getProperty("presetName")?.takeIf { it.isNotEmpty() },
+            gamma = Gamma.byId(p["gamma"]).id,
+            exportFmt = p["exportFmt"]?.takeIf { it in EXPORT_FORMATS } ?: "mid",
+            author = p["author"] ?: "",
+            presetName = p["presetName"]?.takeIf { it.isNotEmpty() },
             tScale = f("tScale", 3f, 1f, 10f),
             // Фильтр нот (билд #46): хранится как есть, но с инвариантом
             // lo <= hi — при ручной правке файла границы не путаются местами
             pitchLo = i("pitchLo", PITCH_LO_DEFAULT, 0, 127).coerceAtMost(i("pitchHi", PITCH_HI_DEFAULT, 0, 127)),
             pitchHi = i("pitchHi", PITCH_HI_DEFAULT, 0, 127).coerceAtLeast(i("pitchLo", PITCH_LO_DEFAULT, 0, 127)),
-            lastWav = p.getProperty("lastWav"),
-            lastMidi = p.getProperty("lastMidi"),
-            lastXml = p.getProperty("lastXml"),
+            lastWav = p["lastWav"],
+            lastMidi = p["lastMidi"],
+            lastXml = p["lastXml"],
         )
     }
 
     /** Params из properties-строк: отсутствующие ключи — нативные дефолты
      *  движка, значения клампятся. Единое место определения полей Params
      *  (считывание): используется load() и применением пресетов. */
-    fun paramsFromProps(p: Properties): V2mEngine.Params {
+    fun paramsFromProps(p: Map<String, String>): V2mEngine.Params {
         fun f(k: String, d: Float, lo: Float = 0f, hi: Float = 1f) =
-            (p.getProperty(k)?.toFloatOrNull() ?: d).coerceIn(lo, hi)
+            (p[k]?.toFloatOrNull() ?: d).coerceIn(lo, hi)
         fun i(k: String, d: Int, lo: Int = 0, hi: Int = Int.MAX_VALUE) =
-            (p.getProperty(k)?.toIntOrNull() ?: d).coerceIn(lo, hi)
-        fun b(k: String, d: Boolean) = p.getProperty(k)?.toBooleanStrictOrNull() ?: d
+            (p[k]?.toIntOrNull() ?: d).coerceIn(lo, hi)
+        fun b(k: String, d: Boolean) = p[k]?.toBooleanStrictOrNull() ?: d
         val def = V2mEngine.Params.defaults()
         return V2mEngine.Params(
             onsetThreshold = f("onsetThreshold", def.onsetThreshold),
@@ -186,32 +180,32 @@ object Preferences {
      *  properties-строках. Единое место определения полей Params (запись):
      *  используется save() и пресетами (дифф от дефолтов). */
     internal fun paramsToProps(params: V2mEngine.Params, keySel: Int, smoothingWindow: Int,
-                               pitchMedianWindow: Int): Properties {
-        val p = Properties()
-        p.setProperty("onsetThreshold", params.onsetThreshold.toString())
-        p.setProperty("frameThreshold", params.frameThreshold.toString())
-        p.setProperty("minNoteLen", params.minNoteLen.toString())
-        p.setProperty("energyTol", params.energyTol.toString())
-        p.setProperty("program", params.program.toString())
-        p.setProperty("velocityCompress", params.velocityCompress.toString())
-        p.setProperty("useMelodiaTrick", params.useMelodiaTrick.toString())
-        p.setProperty("includePitchBends", params.includePitchBends.toString())
-        p.setProperty("tempoBpm", params.tempoBpm.toString())
-        p.setProperty("quantize", params.quantize.toString())
-        p.setProperty("toleranceMs", params.toleranceMs.toString())
-        p.setProperty("harmonizeMerge", params.harmonizeMerge.toString())
-        p.setProperty("minBendBins", params.minBendBins.toString())
-        p.setProperty("globalShift", params.globalShift.toString())
-        p.setProperty("modeSnap", params.modeSnap.toString())
-        p.setProperty("timeSigNum", params.timeSigNum.toString())
-        p.setProperty("timeSigDen", params.timeSigDen.toString())
-        p.setProperty("gateDb", params.gateDb.toString())
-        p.setProperty("lowCutHz", params.lowCutHz.toString())
-        p.setProperty("highCutHz", params.highCutHz.toString())
-        p.setProperty("expComp", params.expComp.toString())
-        p.setProperty("keySel", keySel.toString())
-        p.setProperty("smoothingWindow", smoothingWindow.toString())
-        p.setProperty("pitchMedianWindow", pitchMedianWindow.toString())
+                               pitchMedianWindow: Int): MutableMap<String, String> {
+        val p = LinkedHashMap<String, String>()
+        p["onsetThreshold"] = params.onsetThreshold.toString()
+        p["frameThreshold"] = params.frameThreshold.toString()
+        p["minNoteLen"] = params.minNoteLen.toString()
+        p["energyTol"] = params.energyTol.toString()
+        p["program"] = params.program.toString()
+        p["velocityCompress"] = params.velocityCompress.toString()
+        p["useMelodiaTrick"] = params.useMelodiaTrick.toString()
+        p["includePitchBends"] = params.includePitchBends.toString()
+        p["tempoBpm"] = params.tempoBpm.toString()
+        p["quantize"] = params.quantize.toString()
+        p["toleranceMs"] = params.toleranceMs.toString()
+        p["harmonizeMerge"] = params.harmonizeMerge.toString()
+        p["minBendBins"] = params.minBendBins.toString()
+        p["globalShift"] = params.globalShift.toString()
+        p["modeSnap"] = params.modeSnap.toString()
+        p["timeSigNum"] = params.timeSigNum.toString()
+        p["timeSigDen"] = params.timeSigDen.toString()
+        p["gateDb"] = params.gateDb.toString()
+        p["lowCutHz"] = params.lowCutHz.toString()
+        p["highCutHz"] = params.highCutHz.toString()
+        p["expComp"] = params.expComp.toString()
+        p["keySel"] = keySel.toString()
+        p["smoothingWindow"] = smoothingWindow.toString()
+        p["pitchMedianWindow"] = pitchMedianWindow.toString()
         return p
     }
 
@@ -251,40 +245,32 @@ object Preferences {
         lastXml: String?,
     ) {
         val p = paramsToProps(params, keySel, smoothingWindow, pitchMedianWindow)
-        p.setProperty("instrument", instrument.toString())
-        p.setProperty("clef", clef.toString())
-        p.setProperty("anacrusis", anacrusis.toString())
-        p.setProperty("listenExternal", listenExternal.toString())
-        p.setProperty("midiVolume", midiVolume.toString())
-        p.setProperty("wavVolume", wavVolume.toString())
-        p.setProperty(WAV_VOLUME_SCALE_KEY, WAV_VOLUME_SCALE.toString())
+        p["instrument"] = instrument.toString()
+        p["clef"] = clef.toString()
+        p["anacrusis"] = anacrusis.toString()
+        p["listenExternal"] = listenExternal.toString()
+        p["midiVolume"] = midiVolume.toString()
+        p["wavVolume"] = wavVolume.toString()
+        p[WAV_VOLUME_SCALE_KEY] = WAV_VOLUME_SCALE.toString()
         // Развёрнутость секций панели (билд #52, п.6 приёмки #51): полный
         // набор из состояния GUI — иначе неизвестные save() секции терялись бы
         for ((id, open) in sections) {
-            p.setProperty(SECTION_PREFIX + id, open.toString())
+            p[SECTION_PREFIX + id] = open.toString()
         }
-        p.setProperty("darkTheme", darkTheme.toString())
-        p.setProperty("showAbc", showAbc.toString())
-        p.setProperty("notesTab", notesTab.toString())
-        p.setProperty("gamma", gamma)
-        p.setProperty("exportFmt", exportFmt)
-        p.setProperty("author", author)
-        presetName?.let { p.setProperty("presetName", it) }
-        p.setProperty("tScale", tScale.toString())
-        p.setProperty("pitchLo", pitchLo.toString())
-        p.setProperty("pitchHi", pitchHi.toString())
-        lastWav?.let { p.setProperty("lastWav", it) }
-        lastMidi?.let { p.setProperty("lastMidi", it) }
-        lastXml?.let { p.setProperty("lastXml", it) }
-        try {
-            file.parentFile?.mkdirs()
-            // Atomic: write to a temp file, then rename over the target so a
-            // crash mid-write never leaves a truncated prefs file.
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.outputStream().use { p.store(it, "v2m preferences") }
-            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        } catch (e: Exception) {
-            e.printStackTrace() // prefs are best-effort; the app keeps working
-        }
+        p["darkTheme"] = darkTheme.toString()
+        p["showAbc"] = showAbc.toString()
+        p["notesTab"] = notesTab.toString()
+        p["gamma"] = gamma
+        p["exportFmt"] = exportFmt
+        p["author"] = author
+        presetName?.let { p["presetName"] = it }
+        p["tScale"] = tScale.toString()
+        p["pitchLo"] = pitchLo.toString()
+        p["pitchHi"] = pitchHi.toString()
+        lastWav?.let { p["lastWav"] = it }
+        lastMidi?.let { p["lastMidi"] = it }
+        lastXml?.let { p["lastXml"] = it }
+        // Атомарная запись (temp + переименование) — см. [writeProps]
+        writeProps(path, p, "v2m preferences")
     }
 }

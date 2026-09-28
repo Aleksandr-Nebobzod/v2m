@@ -1,6 +1,5 @@
 package com.v2m.app
 
-import java.util.Locale
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -44,23 +43,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.v2m.app.resources.Res
-import com.v2m.app.resources.metronome
-import com.v2m.app.resources.music_note_2
-import com.v2m.app.resources.play
-import com.v2m.app.resources.stop
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.painterResource
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import com.v2m.app.resources.menu
-import java.io.ByteArrayOutputStream
-import java.io.File
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.roundToInt
@@ -155,7 +146,7 @@ private fun Collapsible(
 
 @Composable
 @OptIn(ExperimentalMaterialApi::class) // RangeSlider (билд #46)
-internal fun App(closeGuard: CloseGuard) {
+fun App(closeGuard: CloseGuard = CloseGuard()) {
     val prefs = remember { Preferences.load() }
     var darkTheme by remember { mutableStateOf(prefs.darkTheme) } // ☰-меню «Вид»: тёмная тема
     MaterialTheme(colors = if (darkTheme) darkColors() else lightColors()) {
@@ -259,7 +250,7 @@ internal fun App(closeGuard: CloseGuard) {
         // ~/.v2m рядом с prefs.properties (см. PresetStore), единый источник
         // имен фабричных — код (FACTORY_PRESETS)
         val presetStore = remember {
-            PresetStore(File(AppData.dir, "presets.properties"))
+            PresetStore(dataPath("presets.properties"))
         }
         val scope = rememberCoroutineScope()
 
@@ -479,8 +470,7 @@ internal fun App(closeGuard: CloseGuard) {
         // character 'r'» — падение в #41): текстовые части — строго в
         // кавычках литерала. Объявлена до onRecClick (локальные fun
         // без forward-ссылок — ошибка компиляции, если вызвать раньше).
-        fun autoRecName(): String =
-            java.text.SimpleDateFormat("yyMMdd'_'HHmm'_v2m.wav'", Locale.ROOT).format(java.util.Date())
+        fun autoRecName(): String = formatRecName(nowEpochMillis())
 
         // Р14: клик по кнопке записи — фазы Idle → Countdown → Recording.
         // Билд #41: debug-метки; страховка — если фаза Recording, а захват
@@ -632,7 +622,7 @@ internal fun App(closeGuard: CloseGuard) {
                 val k = if (raw > disp) 0.45f else 0.08f
                 disp += (raw - disp) * k
                 meterLevel = disp
-                val now = System.currentTimeMillis()
+                val now = nowEpochMillis()
                 if (disp > 0.004f && now - lastLog >= 1000) {
                     lastLog = now
                     val src = when {
@@ -640,8 +630,8 @@ internal fun App(closeGuard: CloseGuard) {
                         recPlaying -> "запись (воспроизведение)"
                         else -> "MIDI-ноты"
                     }
-                    Log.d("meter", "полоса: ${"%.4f".format(Locale.ROOT, disp)} " +
-                        "(${"%.1f".format(Locale.ROOT, levelDb(disp))} dBFS), источник: $src")
+                    Log.d("meter", "полоса: ${fmt(disp, 4)} " +
+                        "(${fmt(levelDb(disp), 1)} dBFS), источник: $src")
                 }
                 delay(40)
             }
@@ -692,7 +682,7 @@ internal fun App(closeGuard: CloseGuard) {
                     } else {
                         val song = runCatching { parseMidiSong(bytes) }.getOrNull()
                         if (song != null) {
-                            finalTempoDetected = String.format(Locale.ROOT, "%.1f", song.tempoBpm)
+                            finalTempoDetected = fmt(song.tempoBpm, 1)
                             if (finalTempoOverride == null) finalTempoText = finalTempoDetected
                             finalSizeDetected = "${song.tsNum}/${song.tsDen}"
                         }
@@ -874,7 +864,7 @@ internal fun App(closeGuard: CloseGuard) {
                             v.framesJson?.let { fj ->
                                 val frames = target.sibling(name.removeSuffix(".mid") + ".frames.json")
                                 if (frames == null || frames.write(fj.toByteArray()) != null) {
-                                    error = Strings.saveFailed.format(name.removeSuffix(".mid") + ".frames.json")
+                                    error = Strings.saveFailed(name.removeSuffix(".mid") + ".frames.json")
                                 }
                             }
                         }
@@ -887,14 +877,17 @@ internal fun App(closeGuard: CloseGuard) {
                         val ok = V2mEngine.midiToMusicXml(
                             anacrusisMidi(exportMidi(v.midi, key, v.muted), anacrusis),
                             tmp, clef, key?.fifths ?: 0, anacrusis)
-                        if (ok) target.write(File(tmp).readBytes()) else Strings.saveFailed.format(name)
+                        // Ядро пишет файл по пути — читаем его через
+                        // хранилище платформы (этап 4в: общего файлового API нет)
+                        val bytes = if (ok) Platform.storage.readBytes(tmp) else null
+                        if (bytes != null) target.write(bytes) else Strings.saveFailed(name)
                     }
                     "abc" -> target.write(exportAbc(
                         anacrusisMidi(exportMidi(v.midi, key, v.muted), anacrusis),
                         v.wavName, key).toByteArray())
-                    else -> Strings.saveFailed.format(name)
+                    else -> Strings.saveFailed(name)
                 }
-                if (fail != null) error = Strings.saveFailed.format(name)
+                if (fail != null) error = Strings.saveFailed(name)
             }
         }
 
@@ -983,7 +976,7 @@ internal fun App(closeGuard: CloseGuard) {
                     // ▶ источника (п.1 приёмки #43): справа от таймера; играет
                     // запись, а без неё — загруженный файл (замечание «б»
                     // приёмки #44); повторное нажатие — стоп (иконка ▢)
-                    val recPlayIcon = if (recPlaying) Res.drawable.stop else Res.drawable.play
+                    val recPlayIcon = if (recPlaying) Icons.Stop else Icons.Play
                     OutlinedButton(onClick = ::recListen,
                         enabled = (rec != null || wavBytes != null) && !busy && recPhase == RecPhase.Idle,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
@@ -991,7 +984,7 @@ internal fun App(closeGuard: CloseGuard) {
                             contentDescription =
                                 if (recPlaying) Strings.recStopListenCd else Strings.recListenCd
                         }) {
-                        Icon(painterResource(recPlayIcon), contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(recPlayIcon, contentDescription = null, modifier = Modifier.size(16.dp))
                     }
                 }
                 // Ряд файла (п.2 приёмки #43 — второй): [Выбрать WAV] имя [Сохранить].
@@ -1085,7 +1078,7 @@ internal fun App(closeGuard: CloseGuard) {
                                 toValue = { r -> val v = r.roundToInt(); if (v <= 24) 0f else v.toFloat() },
                                 toPosition = { v -> if (v <= 0f) 24f else v }) { params = params.copy(tempoBpm = it) }
                             // Метроном играет счёт counIn.mid только при выбранном темпе (2а: при «Авто» недоступна)
-                            SoundButton(Res.drawable.metronome, ::playMetronome,
+                            SoundButton(Icons.Metronome, ::playMetronome,
                                 Modifier.size(36.dp), enabled = params.tempoBpm > 0)
                         }
                         ParamRange(Strings.toleranceLabel, params.toleranceMs, 0f..200f, "toleranceMs",
@@ -1150,12 +1143,12 @@ internal fun App(closeGuard: CloseGuard) {
                                         val keyPart = key?.let { ", ${it.name}" } ?: ""
                                         val harm = harmonyPct(v.notes, key)
                                             ?.let { ", $it% гарм." } ?: ""
-                                        String.format(Locale.ROOT, Strings.versionRow,
+                                        Strings.versionRow(
                                             idx + 1, song?.tsNum ?: 0, song?.tsDen ?: 0,
                                             song?.tempoBpm ?: 0.0, v.notes.size,
                                             keyPart, harm, v.wavName)
                                     } else {
-                                        Strings.versionNoResult.format(i + 1)
+                                        Strings.versionNoResult(i + 1)
                                     },
                                     style = MaterialTheme.typography.body2)
                             }
@@ -1171,10 +1164,10 @@ internal fun App(closeGuard: CloseGuard) {
                     if (v != null) {
                         val song = runCatching { parseMidiSong(v.midi) }.getOrNull()
                         val head = buildString {
-                            appendLine(Strings.paramsLine.format(paramsCli(v.params)))
-                            appendLine(Strings.fileLine.format(v.wavName))
+                            appendLine(Strings.paramsLine(paramsCli(v.params)))
+                            appendLine(Strings.fileLine(v.wavName))
                             if (song != null) {
-                                appendLine(String.format(Locale.ROOT, Strings.tempoLine, song.tempoBpm, song.tsNum, song.tsDen, v.notes.size))
+                                appendLine(Strings.tempoLine(song.tempoBpm, song.tsNum, song.tsDen, v.notes.size))
                             }
                             // «Тональность» — только при явном выборе (замечание 4):
                             // при «Авто» ключ автоподбора уже виден строкой
@@ -1182,14 +1175,14 @@ internal fun App(closeGuard: CloseGuard) {
                             if (keySel != 0) {
                                 val key = keyFromSelection(keySel)
                                 if (key != null) {
-                                    appendLine(Strings.keyLine.format(key.name, key.alterationsText))
+                                    appendLine(Strings.keyLine(key.name, key.alterationsText))
                                 }
                             }
                             // Native "mode fit:" and "tempo:" lines are shown in
                             // Russian below (Strings.modeFitLine) or dropped as
                             // duplicates — filter them out of the raw report
                             parseModeFit(v.report)?.let {
-                                appendLine(String.format(Locale.ROOT, Strings.modeFitLine,
+                                appendLine(Strings.modeFitLine(
                                     it.keyName, it.pct, it.cents, it.strength))
                             }
                             // Строка-сводка кадровых признаков прогона (билд #38):
@@ -1384,8 +1377,7 @@ internal fun App(closeGuard: CloseGuard) {
                                                 Text(
                                                     // The "~" marker occupies a fixed 1-char field so
                                                     // off-grid beats do not shift the measure number.
-                                                    String.format(Locale.ROOT, "  %1s%02d:%s | %s | %7.2f | %3s",
-                                                        tilde, measure, frac, cell, durSec, vel),
+                                                    Strings.notesRow(tilde, measure, frac, cell, durSec, vel),
                                                     fontFamily = FontFamily.Monospace,
                                                     style = MaterialTheme.typography.body2,
                                                     modifier = if (r.isRest || rowMuted) Modifier else Modifier
@@ -1462,7 +1454,7 @@ internal fun App(closeGuard: CloseGuard) {
                                 DropdownMenuItem(onClick = { finalSizeOverride = null; sizeMenuOpen = false }) {
                                     Text(
                                         if (finalSizeDetected == Strings.auto) Strings.auto
-                                        else String.format(Locale.ROOT, Strings.autoDetected, finalSizeDetected),
+                                        else Strings.autoDetected(finalSizeDetected),
                                         style = MaterialTheme.typography.body2)
                                 }
                                 for ((name, ts) in Strings.SIZE_OPTIONS) {
@@ -1594,20 +1586,20 @@ internal fun App(closeGuard: CloseGuard) {
                     }
                     Text(if (busy) Strings.busy else Strings.transcribe)
                 }
-                val playIcon = if (playing) Res.drawable.stop else Res.drawable.play
+                val playIcon = if (playing) Icons.Stop else Icons.Play
                 val playCd = if (playing) Strings.stopIconCd else Strings.listenIconCd
                 OutlinedButton(onClick = ::listen,
                     enabled = !busy && versions.isNotEmpty(),
                     modifier = Modifier.weight(1f).height(48.dp)
                         .semantics { contentDescription = playCd },
                     contentPadding = PaddingValues(0.dp)) {
-                    Icon(painterResource(playIcon), contentDescription = null)
+                    Icon(playIcon, contentDescription = null)
                 }
                 val exportName = Strings.EXPORT_FMT_NAMES[exportFmt] ?: exportFmt
                 Button(onClick = { current?.let { exportVersion(it) } },
                     enabled = !busy && versions.isNotEmpty(),
                     modifier = Modifier.semantics {
-                        contentDescription = Strings.exportCd.format(exportName)
+                        contentDescription = Strings.exportCd(exportName)
                     }) {
                     // Формат на кнопке не показывается (замечание «г»: он виден
                     // типом в окне экспорта); имя формата — только в CD для тестов
@@ -1636,7 +1628,7 @@ internal fun App(closeGuard: CloseGuard) {
             var authorDlgText by remember { mutableStateOf("") }
             // Диалог «Гамма» (п.1 приёмки #48): выбор гаммы спектрограммы
             var gammaDlg by remember { mutableStateOf(false) }
-            SoundButton(Res.drawable.menu, { menuOpen = true },
+            SoundButton(Icons.Menu, { menuOpen = true },
                 Modifier.align(Alignment.TopEnd).size(36.dp))
             if (menuOpen) {
                 // Click-catcher: any click outside the panel closes the menu
@@ -1666,7 +1658,7 @@ internal fun App(closeGuard: CloseGuard) {
                         // каналов синтезатора (MidiPlayer.setVolume).
                         // При внешнем плеере не действует — слайдер выключен.
                         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
-                            Text(String.format(Locale.ROOT, Strings.menuMidiVolume, midiVolume),
+                            Text(Strings.menuMidiVolume(midiVolume),
                                 style = MaterialTheme.typography.body2)
                             Slider(midiVolume.toFloat(), { midiVolume = it.roundToInt() },
                                 valueRange = 0f..127f,
@@ -1679,7 +1671,7 @@ internal fun App(closeGuard: CloseGuard) {
                         // внешний wav. Регистр 0..100 = 0..25 % усиления, см.
                         // WAV_VOLUME_MAX / WAV_VOLUME_DIVISOR (Preferences.kt).
                         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
-                            Text(String.format(Locale.ROOT, Strings.menuWavVolume, wavVolume),
+                            Text(Strings.menuWavVolume(wavVolume),
                                 style = MaterialTheme.typography.body2)
                             Slider(wavVolume.toFloat(), { wavVolume = it.roundToInt() },
                                 valueRange = 0f..WAV_VOLUME_MAX.toFloat(),
@@ -1708,7 +1700,7 @@ internal fun App(closeGuard: CloseGuard) {
                             style = MaterialTheme.typography.body2,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
                         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
-                            Text(String.format(Locale.ROOT, Strings.chartTScale, tScale),
+                            Text(Strings.chartTScale(tScale),
                                 style = MaterialTheme.typography.body2)
                             Slider(tScale, { tScale = it }, valueRange = 1f..10f,
                                 modifier = Modifier.fillMaxWidth())
@@ -1718,8 +1710,7 @@ internal fun App(closeGuard: CloseGuard) {
                         // «Тоны»/ABC/экспорт (см. Strings.chartRangeHint);
                         // границы — полутоны MIDI, подпись в нотах (A0..C8)
                         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
-                            Text(String.format(Locale.ROOT, Strings.chartRange,
-                                    pitchName(pitchLo), pitchName(pitchHi)),
+                            Text(Strings.chartRange(pitchName(pitchLo), pitchName(pitchHi)),
                                 style = MaterialTheme.typography.body2)
                             RangeSlider(
                                 value = pitchLo.toFloat()..pitchHi.toFloat(),
@@ -1735,7 +1726,7 @@ internal fun App(closeGuard: CloseGuard) {
                         // Гамма цветов спектрограммы (п.1 приёмки #48):
                         // список из 4 гамм с образцом шкалы — диалогом
                         MenuAction(
-                            String.format(Locale.ROOT, Strings.menuGamma, gamma.title)) {
+                            Strings.menuGamma(gamma.title)) {
                             menuOpen = false
                             gammaDlg = true
                         }
@@ -1746,7 +1737,7 @@ internal fun App(closeGuard: CloseGuard) {
                             style = MaterialTheme.typography.body2,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
                         MenuAction(
-                            String.format(Locale.ROOT, Strings.menuAuthor,
+                            Strings.menuAuthor(
                                 author.ifEmpty { Strings.authorNone }),
                         ) {
                             authorDlgText = author // форма — с текущим значением
@@ -1908,7 +1899,7 @@ internal fun App(closeGuard: CloseGuard) {
                 AlertDialog(
                     onDismissRequest = { overwriteAnswer?.complete(Overwrite.Cancel) },
                     title = { Text(Strings.recOverwriteTitle) },
-                    text = { Text(Strings.recOverwriteAsk.format(name)) },
+                    text = { Text(Strings.recOverwriteAsk(name)) },
                     confirmButton = {
                         TextButton(onClick = { overwriteAnswer?.complete(Overwrite.Replace) }) {
                             Text(Strings.recOverwriteReplace)
@@ -1941,12 +1932,11 @@ private suspend fun readSampleBytes(path: String): ByteArray = Res.readBytes(pat
  *  still be reading it (no end-of-playback signal exists on this path).
  *  Returns null on success or an error text. */
 private fun playExternally(midi: ByteArray): String? = try {
-    val dir = AppData.dir.apply { mkdirs() }
-    val f = File(dir, "v2m-listen.mid")
-    f.writeBytes(midi)
-    Platform.external.open(f.absolutePath)?.let { Strings.playFailed.format(it) }
+    val path = dataPath("v2m-listen.mid")
+    Platform.storage.writeBytes(path, midi)
+    Platform.external.open(path)?.let { Strings.playFailed(it) }
 } catch (e: Exception) {
-    Strings.playFailed.format(e.message)
+    Strings.playFailed(e.message)
 }
 
 /** Мини-SMF одного тона для клика по ноте (замечание 8): штатная
@@ -1957,7 +1947,7 @@ private fun playExternally(midi: ByteArray): String? = try {
  *  парсеры читают её как длину — см. midiWithMetaTrack (замечание 11).
  *  [cents] (билд #35) — микротон в % полутона: питч-бенд канала перед
  *  NoteOn (raw = 8192 + cents·40.96, ±8192 = ±2 полутона); 0 — без bend. */
-internal fun noteToneMidi(pitch: Int, velocity: Int, program: Int, cents: Float = 0f): ByteArray {
+fun noteToneMidi(pitch: Int, velocity: Int, program: Int, cents: Float = 0f): ByteArray {
     val p = pitch.coerceIn(0, 127)
     val v = velocity.coerceIn(1, 127)
     val pr = program.coerceIn(0, 127)
@@ -1973,15 +1963,15 @@ internal fun noteToneMidi(pitch: Int, velocity: Int, program: Int, cents: Float 
         0x00, 0xFF.toByte(), 0x51, 0x03, 0x07, 0xA1.toByte(), 0x20, // tempo 500000 us = 120 BPM
         0x00, 0xC0.toByte(), pr.toByte(),
     ) + bend + tail
-    val out = ByteArrayOutputStream(body.size + 14 + 8)
-    out.write("MThd".toByteArray(Charsets.US_ASCII))
-    out.write(0); out.write(0); out.write(0); out.write(6) // header length = 6
-    out.write(0); out.write(0) // format 0
-    out.write(0); out.write(1) // 1 track
-    out.write(1); out.write(0xE0) // division 480
-    out.write("MTrk".toByteArray(Charsets.US_ASCII))
-    out.write(0); out.write(0); out.write(0); out.write(body.size)
-    out.write(body)
+    val out = ByteBuilder(body.size + 22)
+    out.appendAscii("MThd")
+    out.appendI32BE(6) // header length = 6
+    out.append(0); out.append(0) // format 0
+    out.append(0); out.append(1) // 1 track
+    out.append(1); out.append(0xE0) // division 480
+    out.appendAscii("MTrk")
+    out.appendI32BE(body.size)
+    out.append(body)
     return out.toByteArray()
 }
 
@@ -2125,7 +2115,7 @@ private fun cutFromPos(pos: Float): Float = CUT_MIN_HZ * exp(pos * CUT_LN_RATIO)
 private fun cutText(hz: Float): String = when {
     hz <= CUT_MIN_HZ + 0.5f || hz >= CUT_MAX_HZ - 50f -> Strings.fxOff
     hz < 1000f -> "${hz.roundToInt()} Гц"
-    else -> "%.1f кГц".format(Locale.ROOT, hz / 1000f)
+    else -> "${fmt(hz / 1000f, 1)} кГц"
 }
 
 /** ln(10 кГц / 20 Гц) — ширина логарифмической шкалы срезов, октав. */
@@ -2151,18 +2141,16 @@ private fun ParamSelect(label: String, options: List<Pair<String, Int>>, value: 
 /** Small square sound-preview button with a Material icon (metronome by the
  *  tempo slider, music note by the key selector), sitting to the right of
  *  its slider. Disabled in the «Авто» state of its control (2а/3а: no tempo
- *  or key chosen — nothing to play). The icon SVG
- *  (composeResources/drawable, fill #1f1f1f) is tinted by the theme's
- *  content color, so it stays visible in a dark theme too. */
-@OptIn(ExperimentalResourceApi::class)
+ *  or key chosen — nothing to play). The icon ([Icons]) is tinted by the
+ *  theme's content color, so it stays visible in a dark theme too. */
 @Composable
-private fun SoundButton(icon: DrawableResource, onClick: () -> Unit,
+private fun SoundButton(icon: ImageVector, onClick: () -> Unit,
                         modifier: Modifier = Modifier, enabled: Boolean = true,
                         cd: String? = null) {
     val acc = if (cd != null) Modifier.semantics { contentDescription = cd } else Modifier
     TextButton(onClick = onClick, enabled = enabled,
         modifier = acc.then(modifier), contentPadding = PaddingValues(0.dp)) {
-        Icon(painterResource(icon), contentDescription = null)
+        Icon(icon, contentDescription = null)
     }
 }
 
@@ -2172,11 +2160,11 @@ private fun SoundButton(icon: DrawableResource, onClick: () -> Unit,
 @Composable
 private fun KeySelector(keySel: Int, onSelect: (Int) -> Unit, onPlayTriad: () -> Unit) {
     Column {
-        ParamLabel(Strings.keySelLabel.format(Strings.KEY_SEL_NAMES[keySel.coerceIn(0, 24)]), "keySelect")
+        ParamLabel(Strings.keySelLabel(Strings.KEY_SEL_NAMES[keySel.coerceIn(0, 24)]), "keySelect")
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Slider(keySel.toFloat(), { onSelect(it.roundToInt()) },
                    valueRange = 0f..24f, steps = 23, modifier = Modifier.weight(1f))
-            SoundButton(Res.drawable.music_note_2, onPlayTriad,
+            SoundButton(Icons.MusicNote, onPlayTriad,
                 Modifier.size(36.dp), enabled = keySel > 0)
         }
     }
@@ -2273,7 +2261,7 @@ private fun EditNotePanel(
     val sel = selectedKey?.let { k -> notes.firstOrNull { noteKeyOf(it) == k } }
     val selMuted = sel != null && noteKeyOf(sel) in muted
     val info = if (sel == null) Strings.editNoSelection
-    else Strings.editInfoCd.format(sel.name + sel.centsText)
+    else Strings.editInfoCd(sel.name + sel.centsText)
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(info, style = MaterialTheme.typography.body2, modifier = Modifier.weight(1f))
         OutlinedButton(onClick = { onDelta(-1) }, enabled = sel != null,
@@ -2307,7 +2295,7 @@ private fun RecButton(phase: RecPhase, countdown: Int, onClick: () -> Unit, enab
     val cd = when (phase) {
         RecPhase.Idle -> Strings.recCd
         // «через 0…» на последней секунде отсчёта — без числа (билд #56)
-        RecPhase.Countdown -> if (countdown > 0) Strings.recCountdownCd.format(countdown) else Strings.recStartCd
+        RecPhase.Countdown -> if (countdown > 0) Strings.recCountdownCd(countdown) else Strings.recStartCd
         RecPhase.Recording -> Strings.recStopCd
     }
     Button(onClick = onClick, enabled = enabled,
@@ -2395,7 +2383,7 @@ private fun LevelBar(level: Float, modifier: Modifier = Modifier) {
 }
 
 /** Секунды → «m:ss» (0:00..1:00 — таймер записи, билд #40). */
-private fun recClock(sec: Int): String = "%d:%02d".format(sec / 60, sec % 60)
+private fun recClock(sec: Int): String = "${sec / 60}:${zeroPad(sec % 60, 2)}"
 
 /** Маска сегментов семисегментных цифр (SevenSegDisplay, билд #40). */
 private val SEG7 = mapOf(

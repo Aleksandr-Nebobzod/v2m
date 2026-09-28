@@ -6,7 +6,12 @@ import java.awt.Desktop
 import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
+import java.io.FileOutputStream
+import java.io.OutputStream
+import java.io.PrintStream
 import java.net.URI
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.Locale
 import javax.swing.JFileChooser
 import javax.swing.SwingUtilities
@@ -22,6 +27,67 @@ fun installDesktopPlatform() {
     Platform.midi = DesktopMidiPlayback
     Platform.wav = DesktopWavPlayback
     Platform.newCapture = { NativeCapture() }
+    Platform.storage = DesktopStorage
+    Platform.log = DesktopLog
+}
+
+/** Разовый перехват System.out/System.err (tee: файл + консоль) — журнал
+ *  тестирования собирает все печати приложения, в т.ч. `e.printStackTrace`
+ *  в catch-ветках (билд #33). Ставится только при [Log.DEBUG]; вызывать из
+ *  точки входа ([main]) до [Log.install] — заголовок сессии уже должен
+ *  попасть в файл. Самотест перехват не ставит: его отчёт идёт в консоль. */
+fun installDesktopLogTee() {
+    if (!Log.DEBUG) return
+    try {
+        val logFile = File(dataPath("v2m-debug.log"))
+        logFile.parentFile?.mkdirs()
+        val fos = FileOutputStream(logFile, true) // append — сессии теста не стирают друг друга
+        val originalOut = System.out
+        val originalErr = System.err
+        System.setOut(PrintStream(Tee(fos, originalOut), true, Charsets.UTF_8))
+        System.setErr(PrintStream(Tee(fos, originalErr), true, Charsets.UTF_8))
+    } catch (e: Exception) {
+        e.printStackTrace() // журнал — best-effort; без него приложение работает
+    }
+}
+
+/** Перенаправляет поток в два вывода одновременно (файл + консоль). */
+private class Tee(private val a: OutputStream, private val b: OutputStream) : OutputStream() {
+    override fun write(b0: Int) {
+        a.write(b0); b.write(b0)
+    }
+
+    override fun write(buf: ByteArray, off: Int, len: Int) {
+        a.write(buf, off, len); b.write(buf, off, len)
+    }
+
+    override fun flush() {
+        a.flush(); b.flush()
+    }
+}
+
+/** Файлы каталога данных: обычные `java.io.File` (desktop). */
+private object DesktopStorage : StorageService {
+    override fun readBytes(path: String): ByteArray? =
+        runCatching { File(path).takeIf { it.isFile }?.readBytes() }.getOrNull()
+
+    override fun writeBytes(path: String, bytes: ByteArray) {
+        File(path).apply { parentFile?.mkdirs() }.writeBytes(bytes)
+    }
+
+    override fun writeAtomic(path: String, bytes: ByteArray) {
+        val f = File(path)
+        f.parentFile?.mkdirs()
+        val tmp = File(f.parentFile, f.name + ".tmp")
+        tmp.writeBytes(bytes)
+        Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
+}
+
+/** Журнал desktop: печать в stdout, перехваченный Tee-ом на файл
+ *  ([installDesktopLogTee]) — консоль и журнал получают одну и ту же строку. */
+private object DesktopLog : LogSink {
+    override fun append(line: String) = println(line)
 }
 
 /** Открыть [target] (URL или путь) во внешней программе ОС: при доступном
@@ -62,8 +128,9 @@ private fun openExternalTarget(target: String): String? {
  *  (`CoroutinesInternalError: CompletedContinuation …`), см. историю #59. */
 private object DesktopFileService : FileService {
 
-    override fun tempPath(name: String): String =
-        File(AppData.dir.apply { mkdirs() }, name).absolutePath
+    override fun tempPath(name: String): String = dataPath(name).also {
+        File(it).parentFile?.mkdirs()
+    }
 
     override suspend fun pickWav(title: String, startDirKey: String?): PickedFile? =
         withContext(Dispatchers.IO) {
