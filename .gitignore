@@ -12,6 +12,10 @@ basicpitch/src/libv2m/build/
 app/**/build/
 app/.gradle/
 app/.kotlin/
+# Промежуточная сборка NDK (externalNativeBuild)
+app/**/.cxx/
+# Машинно-зависимый путь к Android SDK (создаёт Android Studio)
+app/local.properties
 
 # Vendor-зависимости upstream basicpitch.cpp (onnxruntime ~580 МБ и др.).
 # Для сборки с нуля: склонировать https://github.com/sevagh/basicpitch.cpp

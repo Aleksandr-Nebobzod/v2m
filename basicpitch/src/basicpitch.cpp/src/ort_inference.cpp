@@ -1,8 +1,15 @@
 #include <Eigen/Dense>
-#include <fcntl.h>
+// ONNX Runtime: в исходниках (vendor/onnxruntime) заголовок лежит вложенно, в
+// официальном релизе — плоско. Автосборка portable-комплекта берёт релиз
+// 1.21.0 (.github/workflows/desktop.yml): заголовки и библиотека одной версии.
+#if __has_include(<onnxruntime/core/session/onnxruntime_cxx_api.h>)
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
-#include <unistd.h>
+#else
+#include <onnxruntime_cxx_api.h>
+#endif
 #include <unsupported/Eigen/CXX11/Tensor>
+
+#include "v2m_posix.h" // dup/dup2/open/close с NUL для Windows (MSVC)
 
 // this is the nmp model baked into a header file
 #include "basicpitch.hpp"
@@ -74,10 +81,10 @@ basic_pitch::InferenceResult basic_pitch::ort_inference(const float *mono_audio,
     int devnull = -1;
     if (!basic_pitch::g_verbose)
     {
-        saved_stderr = dup(STDERR_FILENO);
-        devnull = open("/dev/null", O_WRONLY);
+        saved_stderr = v2m_dup(STDERR_FILENO);
+        devnull = v2m_open(V2M_DEVNULL, O_WRONLY);
         if (devnull >= 0)
-            dup2(devnull, STDERR_FILENO);
+            v2m_dup2(devnull, STDERR_FILENO);
     }
 
     // Create the ONNX Runtime session from the in-memory ORT model
@@ -86,11 +93,11 @@ basic_pitch::InferenceResult basic_pitch::ort_inference(const float *mono_audio,
     if (!basic_pitch::g_verbose)
     {
         if (devnull >= 0)
-            close(devnull);
+            v2m_close(devnull);
         if (saved_stderr >= 0)
-            dup2(saved_stderr, STDERR_FILENO);
+            v2m_dup2(saved_stderr, STDERR_FILENO);
         if (saved_stderr >= 0)
-            close(saved_stderr);
+            v2m_close(saved_stderr);
     }
 
     // Constants for processing; overlap 30 frames

@@ -337,6 +337,100 @@ static int choose_subdivision(const std::vector<float> &starts_s,
     return 0;
 }
 
+// Grid-phase alignment (Т02, docs/brd.md): the whole beat grid is shifted
+// (its phase chosen) instead of snapping notes one by one, so a spurious
+// first attack or an anacrusis cannot offset the quantized output. The phase
+// is the weighted circular median of note starts around the beat grid:
+// attacks weigh 0.4, doubled to 0.8 when the attack already sits on a beat
+// (+-15% of the beat period; judged on the unshifted axis — one pass). The
+// returned anchor keeps the first start inside the first beat (a beat is
+// prepended when the optimum would fall before it).
+static float align_grid_phase(const std::vector<float> &starts_s, float bpm)
+{
+    if (starts_s.empty())
+    {
+        return 0.0f;
+    }
+    const float period = 60.0f / bpm;
+    // Reference phase: the first start — the grid the quantizer would have
+    // used before this alignment (Т02 п.4: beat membership is judged on the
+    // unshifted axis).
+    const float ref = starts_s.front();
+    const float hit_band = 0.15f * period;
+    const size_t n = starts_s.size();
+    std::vector<float> phases(n);
+    std::vector<float> weights(n);
+    for (size_t i = 0; i < n; ++i)
+    {
+        float u = std::fmod(starts_s[i] - ref, period);
+        if (u < 0.0f)
+        {
+            u += period;
+        }
+        phases[i] = u / period;
+        const float to_beat = std::min(u, period - u);
+        weights[i] = to_beat <= hit_band ? 0.8f : 0.4f;
+    }
+
+    // Exact minimum of the piecewise-linear cost: break points of the
+    // circular L1 sum sit at the attacks and at their antipodes (where the
+    // shortest-path wrap switches between two attacks), so both are tried.
+    std::vector<float> candidates = phases;
+    for (float p : phases)
+    {
+        float q = p + 0.5f;
+        if (q >= 1.0f)
+        {
+            q -= 1.0f;
+        }
+        candidates.push_back(q);
+    }
+    float best_x = candidates[0];
+    float best_cost = 1e18f;
+    for (float x : candidates)
+    {
+        float cost = 0.0f;
+        for (size_t i = 0; i < n; ++i)
+        {
+            float d = std::fabs(phases[i] - x);
+            if (d > 0.5f)
+            {
+                d = 1.0f - d;
+            }
+            cost += weights[i] * d;
+        }
+        if (cost < best_cost)
+        {
+            best_cost = cost;
+            best_x = x;
+        }
+    }
+    // Cost of keeping the anchor at the first start (the pre-Т02 grid).
+    // On evenly filled or tempo-drifting material the L1 gain of a phase
+    // shift is small (<= ~5 %): it merely reallocates error between beat
+    // clusters and moves the first note off its downbeat. Only a substantial
+    // gain (>= 10 %) justifies the shift — that is the spurious-first-attack
+    // / anacrusis case Т02 is for.
+    float cost_at_zero = 0.0f;
+    for (size_t i = 0; i < n; ++i)
+    {
+        float d = phases[i] < 0.5f ? phases[i] : 1.0f - phases[i];
+        cost_at_zero += weights[i] * d;
+    }
+    if (cost_at_zero - best_cost < 0.10f * cost_at_zero)
+    {
+        best_x = 0.0f;
+    }
+
+    float anchor = ref + best_x * period;
+    // First start must fall inside the first beat: shift the anchor by whole
+    // beats (a beat is prepended when the optimum precedes the first start).
+    const float first = starts_s.front();
+    const float in_beat = std::fmod(first - anchor, period);
+    anchor = first - (in_beat < 0.0f ? in_beat + period : in_beat);
+    return anchor;
+}
+
 RhythmResult analyze_rhythm(const Eigen::Tensor2dXf &onsets,
                             const std::vector<float> &starts_s, float frame_rate,
                             const RhythmParams &params,
@@ -381,9 +475,11 @@ RhythmResult analyze_rhythm(const Eigen::Tensor2dXf &onsets,
             detect_ts_numerator(accent_sig, result.beats_s, bpm, frame_rate);
     }
 
-    // The grid is anchored at the first note so the first note always starts
-    // the measure (no leading rest in the quantized output).
-    result.grid_anchor = starts_s.front();
+    // Grid phase (Т02, docs/brd.md): weighted circular median of note starts,
+    // not the first note — a spurious first attack must not shift the whole
+    // grid. The anchor keeps the first start inside the first beat, so a
+    // leading rest (anacrusis) may appear before it in the quantized output.
+    result.grid_anchor = align_grid_phase(starts_s, bpm);
 
     // Grid for quantization: auto or explicit subdivision
     const float tolerance_s = params.tolerance_ms / 1000.0f;

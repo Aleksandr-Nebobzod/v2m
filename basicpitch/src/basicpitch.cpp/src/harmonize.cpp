@@ -12,6 +12,9 @@
 // 5. apply_mode_snap: pull each note centroid toward the nearest scale degree
 //    with the user-specified strength (0..1); whole semitones go to the pitch,
 //    the remainder goes to the bend values.
+// 6. stabilize_note_pitches: «Стабильность питча» (билд #55, Р19) — a short note
+//    a semitone away from the median pitch of its neighbours is attached to the
+//    main note (its span joins the neighbour) instead of being deleted.
 #include "basicpitch.hpp"
 #include <algorithm>
 #include <array>
@@ -74,6 +77,187 @@ void merge_note_fragments(std::vector<NoteEvent> &notes, int max_semitones)
         merged.push_back(std::move(n));
     }
     notes = std::move(merged);
+}
+
+// «Стабильность питча» (билд #55, Р19): короткая нота, выбивающаяся из медианы
+// высот соседей на полутон, не удаляется — её звучание присоединяется к
+// основной ноте (соседу с медианным питчем, обычно это начало следующей ноты):
+// промежуток выброса становится частью основной ноты, её питч и громкость
+// сохраняются. Если основной ноты рядом нет, нота остаётся как есть.
+// Список должен быть отсортирован по времени (гарантирует convert_to_midi).
+// Защиты (нота не трогается):
+// 1) длинная нота (больше max_frames кадров модели — не выброс);
+// 2) перекрывающиеся по времени ноты (полифония) в окрестность не входят:
+//    выброс и основная нота должны быть из одного голоса;
+// 3) в окрестности есть нота того же питча — это артикуляция, а не выброс;
+// 4) мордент A-B-A: выброс зажат между нотами одного питча — украшение;
+// 5) окрестность стабильна (разброс высот <= MAX_STAB_HOOD_SPREAD_SEMITONES);
+// 6) два соседних по времени кандидата — чередование (трель), метки снимаются
+//    с обоих: такие ноты — «выбросы» друг для друга.
+// Окрестность — window-1 соседей (окно без самой ноты); у краёв списка
+// доступных соседей меньше, вырожденная окрестность (пустая) не рассматривается.
+// window: нечётное >= 3 (чётное или меньшее молча выключает фильтр).
+int stabilize_note_pitches(std::vector<NoteEvent> &notes, int window,
+                           int max_frames)
+{
+    const int n = static_cast<int>(notes.size());
+    if (window < 3 || (window % 2) == 0 || n < 3 || max_frames < 1)
+    {
+        return 0;
+    }
+    const int half = window / 2;
+    std::vector<char> is_outlier(static_cast<size_t>(n), 0);
+    std::vector<int> main_pitch(static_cast<size_t>(n), 0);
+    std::vector<int> hood;
+    hood.reserve(static_cast<size_t>(window - 1));
+    for (int i = 0; i < n; ++i)
+    {
+        const NoteEvent &note = notes[static_cast<size_t>(i)];
+        if (note.end_idx - note.start_idx > max_frames)
+        {
+            continue; // защита 1: длинные ноты не трогаем
+        }
+        hood.clear();
+        bool repeated = false;
+        for (int k = -half; k <= half; ++k)
+        {
+            if (k == 0)
+            {
+                continue;
+            }
+            const int j = i + k;
+            if (j < 0 || j >= n)
+            {
+                continue; // защита от вырожденной окрестности у краёв списка
+            }
+            const NoteEvent &nb = notes[static_cast<size_t>(j)];
+            if (nb.start_idx < note.end_idx && note.start_idx < nb.end_idx)
+            {
+                continue; // защита 2: другой голос
+            }
+            if (nb.pitch == note.pitch)
+            {
+                repeated = true; // защита 3: повторная нота — артикуляция
+                break;
+            }
+            hood.push_back(nb.pitch);
+        }
+        if (repeated || hood.empty())
+        {
+            continue;
+        }
+        if (i > 0 && i + 1 < n) // защита 4: мордент A-B-A
+        {
+            const NoteEvent &prev = notes[static_cast<size_t>(i - 1)];
+            const NoteEvent &next = notes[static_cast<size_t>(i + 1)];
+            if (prev.end_idx <= note.start_idx && note.end_idx <= next.start_idx &&
+                prev.pitch == next.pitch &&
+                std::abs(prev.pitch - note.pitch) <= MAX_STAB_DEVIATION_SEMITONES)
+            {
+                continue;
+            }
+        }
+        const auto [lo, hi] = std::minmax_element(hood.begin(), hood.end());
+        if (*hi - *lo > MAX_STAB_HOOD_SPREAD_SEMITONES)
+        {
+            continue; // защита 5: соседи сами не согласованы
+        }
+        std::sort(hood.begin(), hood.end());
+        const int median = hood[hood.size() / 2]; // верхний из двух средних
+        const int dev = std::abs(note.pitch - median);
+        if (dev < 1 || dev > MAX_STAB_DEVIATION_SEMITONES)
+        {
+            continue; // нота согласуется с окрестностью
+        }
+        is_outlier[static_cast<size_t>(i)] = 1;
+        main_pitch[static_cast<size_t>(i)] = median;
+    }
+    for (int i = 0; i + 1 < n; ++i) // защита 6: чередование не трогаем
+    {
+        if (is_outlier[static_cast<size_t>(i)] &&
+            is_outlier[static_cast<size_t>(i) + 1])
+        {
+            is_outlier[static_cast<size_t>(i)] = 0;
+            is_outlier[static_cast<size_t>(i) + 1] = 0;
+        }
+    }
+    int attached = 0;
+    std::vector<char> drop(static_cast<size_t>(n), 0);
+    for (int i = 0; i < n; ++i)
+    {
+        if (!is_outlier[static_cast<size_t>(i)])
+        {
+            continue;
+        }
+        const NoteEvent &note = notes[static_cast<size_t>(i)];
+        const int median = main_pitch[static_cast<size_t>(i)];
+        int target = -1; // основная нота: сначала следующая, затем предыдущая
+        for (int side = 0; side < 2 && target < 0; ++side)
+        {
+            const int j = (side == 0) ? i + 1 : i - 1;
+            if (j < 0 || j >= n)
+            {
+                continue;
+            }
+            const NoteEvent &cand = notes[static_cast<size_t>(j)];
+            if (cand.pitch != median)
+            {
+                continue;
+            }
+            const int gap = (side == 0) ? cand.start_idx - note.end_idx
+                                        : note.start_idx - cand.end_idx;
+            if (gap > MAX_STAB_ATTACH_GAP_FRAMES)
+            {
+                continue;
+            }
+            target = j;
+        }
+        if (target < 0)
+        {
+            continue; // основной ноты рядом нет — нота остаётся
+        }
+        NoteEvent &main = notes[static_cast<size_t>(target)];
+        const int new_start = std::min(main.start_idx, note.start_idx);
+        const int new_end = std::max(main.end_idx, note.end_idx);
+        // Бенды основной ноты растягиваются по её длине (midi_notes.cpp:
+        // time_increment = span / (n_bends - 1)); дополняем массив крайним
+        // значением, чтобы кривая осталась на своём месте внутри ноты.
+        if (main.pitch_bends && !main.pitch_bends->empty())
+        {
+            const int pad_front = main.start_idx - new_start;
+            const int pad_back = new_end - main.end_idx;
+            const int first = main.pitch_bends->front();
+            const int last = main.pitch_bends->back();
+            if (pad_front > 0)
+            {
+                main.pitch_bends->insert(main.pitch_bends->begin(),
+                                         static_cast<size_t>(pad_front), first);
+            }
+            if (pad_back > 0)
+            {
+                main.pitch_bends->insert(main.pitch_bends->end(),
+                                         static_cast<size_t>(pad_back), last);
+            }
+        }
+        main.start_idx = new_start;
+        main.end_idx = new_end;
+        drop[static_cast<size_t>(i)] = 1;
+        ++attached;
+    }
+    if (attached == 0)
+    {
+        return 0;
+    }
+    size_t keep = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        if (!drop[static_cast<size_t>(i)])
+        {
+            notes[keep++] = notes[static_cast<size_t>(i)];
+        }
+    }
+    notes.resize(keep);
+    return attached;
 }
 
 void drop_small_bends(std::vector<NoteEvent> &notes, int min_bend_bins)

@@ -51,6 +51,20 @@ const int TIME_SIGNATURE_DENOMINATOR = 4;
 constexpr float MODE_TOLERANCE_SEMITONES = 0.3f; // 30 cents
 constexpr float MODE_MIN_FRACTION = 0.5f;        // best key must cover >= 50%
 
+// «Стабильность питча» (билд #54, Р19; присоединение — билд #55): нота не
+// длиннее этого порога (кадров модели, 1 кадр ≈ 11.6 мс) считается «короткой» —
+// только короткие ноты могут быть присоединены к основной ноте как выбросы по
+// медиане высот соседей. Кандидат в ручки.
+constexpr int MAX_STAB_NOTE_FRAMES = 15;
+// ...отклонение выброса от медианы высот соседей: ровно полутон (кандидат в
+// ручки — расширение до тона присоединяло бы проходящие ноты).
+constexpr int MAX_STAB_DEVIATION_SEMITONES = 1;
+// ...разброс высот окрестности: соседи должны быть согласованы между собой.
+constexpr int MAX_STAB_HOOD_SPREAD_SEMITONES = 1;
+// ...зазор «встык» между выбросом и основной нотой (кадры модели; 2 — как в
+// merge_note_fragments).
+constexpr int MAX_STAB_ATTACH_GAP_FRAMES = 2;
+
 // midi constants
 const int DEFAULT_TPQN = 220; // ticks per quarter note
 };                            // namespace constants
@@ -84,6 +98,9 @@ struct HarmonizeParams
     float global_shift = 0.0f;   // 0..1: apply median global detune correction
     float mode_snap = 0.0f;      // 0..1: fit key/mode and snap notes to scale
                                  // degrees (0 = off, 1 = exactly on degrees)
+    // «Стабильность питча» (билд #54, Р19): медианный пост-фильтр списка нот,
+    // 1 = выключено; нечётные 3..7 — ширина окна в нотах (чётное молча выкл)
+    int pitch_median_window = 1;
 };
 
 // Result of key/mode fitting (OQ-06 stage 2)
@@ -99,9 +116,10 @@ struct RhythmResult
 {
     float tempo_bpm = 0.0f;      // 0 = rhythm processing not applied
     std::vector<float> beats_s;  // beat times in seconds
-    float grid_anchor = 0.0f;    // first grid point (0 = first beat); the
-                                 // first note anchors the grid so no leading
-                                 // rest appears before the first note
+    float grid_anchor = 0.0f;    // first grid point (0 = first beat); phase
+                                 // chosen by weighted circular median of note
+                                 // starts (Т02) — a leading rest (anacrusis)
+                                 // may precede the first note
     int subdivision = 0;         // grid division used (0 = none)
     int ts_numerator = 0;        // time signature numerator (0 = none)
     int ts_denominator = 0;      // time signature denominator (0 = none)
@@ -129,8 +147,32 @@ struct InferenceResult
     Eigen::Tensor2dXf contours;
 };
 
+// Compact frame-feature summary of the model output as a JSON document
+// (see frame_features.cpp; фиксированный набор признаков, билд #37).
+// Вызывается после сглаживания (билд #53) — признаки описывают тот же
+// материал, что ушёл в сборку нот.
+// track/author/ts — непустые метаданные (билд #38): попадают в "meta"
+// файла (схема v2m-frame-features-2); ts — время прогона, ISO 8601.
+std::string frame_features_json(const Eigen::Tensor2dXf &notes,
+                                const Eigen::Tensor2dXf &onsets,
+                                const Eigen::Tensor2dXf &contours,
+                                const std::string &track = std::string(),
+                                const std::string &author = std::string(),
+                                const std::string &ts = std::string());
+
 InferenceResult ort_inference(const std::vector<float> &mono_audio);
 InferenceResult ort_inference(const float *mono_audio, int length);
+
+// Медианное сглаживание кадровых тензоров по времени (см.
+// contour_smoothing.cpp): window — нечётное число кадров модели
+// (1 кадр ≈ 11.6 мс), < 3 = выключено; применяется после инференса.
+// smooth_contours — контур высоты: бенды (микротон), центроиды нот,
+// гармонизация; smooth_frames — активации звучания (notes): из них
+// собираются ноты, поэтому фильтр меняет границы и длительность нот.
+// Активации начал (onsets) сознательно не фильтруются — медиана по времени
+// размывает и гасит атаки.
+void smooth_contours(Eigen::Tensor2dXf &contours, int window);
+void smooth_frames(Eigen::Tensor2dXf &frames, int window);
 
 struct NoteEvent
 {
@@ -160,6 +202,11 @@ std::vector<uint8_t> convert_to_midi(const InferenceResult &inference_result,
 
 // Harmonization post-processing, see harmonize.cpp
 void merge_note_fragments(std::vector<NoteEvent> &notes, int max_semitones);
+// «Стабильность питча» (билд #55, Р19): присоединяет звучание коротких
+// нот-выбросов к основной ноте по медиане высот соседей (см. harmonize.cpp;
+// окно в нотах, 1 = выкл). Возвращает число присоединённых нот.
+int stabilize_note_pitches(std::vector<NoteEvent> &notes, int window,
+                           int max_frames);
 void drop_small_bends(std::vector<NoteEvent> &notes, int min_bend_bins);
 float estimate_global_shift(const std::vector<NoteEvent> &notes);
 // Best (root, scale) covering >= 50% of note centroids within 30 cents;

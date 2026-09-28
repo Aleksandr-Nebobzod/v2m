@@ -1,3 +1,4 @@
+#include "audio_effects.hpp"
 #include "basicpitch.hpp"
 #include "v2m.h"
 #include "MultiChannelResampler.h"
@@ -141,8 +142,18 @@ struct CliOptions
     bool use_melodia_trick = true;
     bool include_pitch_bends = true;
     bool verbose = false;
+    bool frames = false; // also write <name>.frames.json next to the .mid
+    bool spectrogram = false; // also write <name>.pgm (spectrogram overview)
+    std::string author;  // --author: "meta.author" файла признаков (билд #38)
     basic_pitch::RhythmParams rhythm;
     basic_pitch::HarmonizeParams harmonize;
+    // «Мелодика» (билд #52, п.5 приёмки #51): медианное сглаживание кадров
+    // модели, нечётное окно 3..15 кадров; 1 = выключено
+    int smoothing_window = 1;
+    // «Стабильность питча» (билд #54, Р19): удаление коротких нот-выбросов по
+    // медиане высот соседей, окно 3..7 нот; 1 = выключено
+    int pitch_median_window = 1;
+    basic_pitch::AudioEffectParams fx; // «Обработка» (билд #50)
 };
 
 static CliOptions parse_cli_options(int argc, const char **argv, int &i)
@@ -179,6 +190,26 @@ static CliOptions parse_cli_options(int argc, const char **argv, int &i)
             {
                 std::cerr << "Option " << opt_name
                           << " must be in range [0, 1]" << std::endl;
+                exit(1);
+            }
+            out = value;
+        };
+        auto parse_bounded = [&](float &out, const char *opt_name, float lo, float hi) -> void
+        {
+            float value = 0.0f;
+            try
+            {
+                value = std::stof(require_value(opt_name));
+            }
+            catch (const std::exception &)
+            {
+                std::cerr << "Invalid value for option " << opt_name << std::endl;
+                exit(1);
+            }
+            if (value < lo || value > hi)
+            {
+                std::cerr << "Option " << opt_name << " must be in range ["
+                          << lo << ", " << hi << "]" << std::endl;
                 exit(1);
             }
             out = value;
@@ -328,6 +359,57 @@ static CliOptions parse_cli_options(int argc, const char **argv, int &i)
             }
             opts.params.velocity_compress = value;
         }
+        // «Обработка» (билд #50): крайние значения = эффект выключен.
+        else if (arg == "--gate")
+            parse_bounded(opts.fx.gate_db, "--gate", -80.0f, 0.0f);
+        else if (arg == "--low-cut")
+            parse_bounded(opts.fx.low_cut_hz, "--low-cut", 20.0f, 10000.0f);
+        else if (arg == "--high-cut")
+            parse_bounded(opts.fx.high_cut_hz, "--high-cut", 20.0f, 10000.0f);
+        else if (arg == "--exp-comp")
+            parse_bounded(opts.fx.exp_comp, "--exp-comp", -100.0f, 100.0f);
+        else if (arg == "--smoothing")
+        {
+            int value = 0;
+            try
+            {
+                value = std::stoi(require_value("--smoothing"));
+            }
+            catch (const std::exception &)
+            {
+                std::cerr << "Invalid value for option --smoothing" << std::endl;
+                exit(1);
+            }
+            if (value != 1 && (value < 3 || value > 15 || (value % 2) == 0))
+            {
+                std::cerr << "Option --smoothing must be 1 (off) or odd in "
+                             "range [3, 15]"
+                          << std::endl;
+                exit(1);
+            }
+            opts.smoothing_window = value;
+        }
+        else if (arg == "--pitch-median")
+        {
+            int value = 0;
+            try
+            {
+                value = std::stoi(require_value("--pitch-median"));
+            }
+            catch (const std::exception &)
+            {
+                std::cerr << "Invalid value for option --pitch-median" << std::endl;
+                exit(1);
+            }
+            if (value != 1 && (value < 3 || value > 7 || (value % 2) == 0))
+            {
+                std::cerr << "Option --pitch-median must be 1 (off) or odd in "
+                             "range [3, 7]"
+                          << std::endl;
+                exit(1);
+            }
+            opts.pitch_median_window = value;
+        }
         else if (arg == "--harmonize-merge")
         {
             int value = 0;
@@ -413,6 +495,18 @@ static CliOptions parse_cli_options(int argc, const char **argv, int &i)
         {
             opts.verbose = true;
         }
+        else if (arg == "--frames")
+        {
+            opts.frames = true;
+        }
+        else if (arg == "--spectrogram")
+        {
+            opts.spectrogram = true;
+        }
+        else if (arg == "--author")
+        {
+            opts.author = require_value("--author");
+        }
         else if (arg == "--pitch-bends")
         {
             opts.include_pitch_bends = true;
@@ -468,6 +562,27 @@ static CliOptions parse_cli_options(int argc, const char **argv, int &i)
         }
     }
     return opts;
+}
+
+// Спектрограмма в PGM (P5): по горизонтали — время (кадры), по вертикали —
+// частота (сверху высокие полосы). Только для обзора материала (билд #47).
+static void write_spectrogram_pgm(const std::filesystem::path &path,
+                                  const uint8_t *data, int n_frames,
+                                  int n_bands)
+{
+    std::ofstream out(path, std::ios::binary);
+    out << "P5\n" << n_frames << " " << n_bands << "\n255\n";
+    std::vector<uint8_t> row(static_cast<size_t>(n_frames));
+    for (int b = n_bands - 1; b >= 0; --b)
+    {
+        for (int f = 0; f < n_frames; ++f)
+        {
+            row[static_cast<size_t>(f)] =
+                data[static_cast<size_t>(f) * n_bands + b];
+        }
+        out.write(reinterpret_cast<const char *>(row.data()),
+                  static_cast<std::streamsize>(row.size()));
+    }
 }
 
 int main(int argc, const char **argv)
@@ -529,8 +644,40 @@ int main(int argc, const char **argv)
         std::cerr << "  --mode-snap <0..1>        fit key/mode and snap notes "
                      "to scale degrees (default: 0)"
                   << std::endl;
+        std::cerr << "  --gate <dB>               noise gate threshold, -80..0 "
+                     "(-80 = off, default)"
+                  << std::endl;
+        std::cerr << "  --low-cut <Hz>            low-cut (high-pass) 24 dB/oct, "
+                     "20..10000 (20 = off, default)"
+                  << std::endl;
+        std::cerr << "  --high-cut <Hz>           high-cut (low-pass) 24 dB/oct, "
+                     "20..10000 (10000 = off, default)"
+                  << std::endl;
+        std::cerr << "  --exp-comp <%>            dynamics: -100..-1 audio "
+                     "compressor (loudness levelling), 1..100 expander "
+                     "(0 = off, default)"
+                  << std::endl;
+        std::cerr << "  --smoothing <N>           median smoothing of model "
+                     "frames (pitch contour + note activations), odd window "
+                     "3..15 frames (1 = off, default)"
+                  << std::endl;
+        std::cerr << "  --pitch-median <N>        pitch stability: attach the "
+                     "sound of short notes standing out from the median pitch "
+                     "of their neighbours to the main note, odd window 3..7 "
+                     "notes (1 = off, default)"
+                  << std::endl;
         std::cerr << "  --verbose                  show progress messages "
                      "(default: silent)"
+                  << std::endl;
+        std::cerr << "  --frames                   also write the frame-features "
+                     "summary <name>.frames.json next to the .mid file"
+                  << std::endl;
+        std::cerr << "  --author <name>            author for the frame-features "
+                     "\"meta\" (with --frames; default: none)"
+                  << std::endl;
+        std::cerr << "  --spectrogram              also write the spectrogram "
+                     "overview <name>.pgm of the model input (multi-resolution "
+                     "STFT, after the audio effects; билды #47, #50)"
                   << std::endl;
         exit(1);
     }
@@ -601,12 +748,29 @@ int main(int argc, const char **argv)
     vp.global_shift = opts.harmonize.global_shift;
     vp.mode_snap = opts.harmonize.mode_snap;
     vp.verbose = opts.verbose ? 1 : 0;
+    vp.gate_db = opts.fx.gate_db;
+    vp.low_cut_hz = opts.fx.low_cut_hz;
+    vp.high_cut_hz = opts.fx.high_cut_hz;
+    vp.exp_comp = opts.fx.exp_comp;
+    vp.smoothing_window = opts.smoothing_window;
+    vp.pitch_median_window = opts.pitch_median_window;
+
+    // Метаданные файла признаков (билд #38): трек = имя входного файла
+    // без расширения, автор — из --author (пусто = поле опускается).
+    v2m_set_frames_meta(std::filesystem::path(wav_file).stem().string().c_str(),
+                        opts.author.c_str());
 
     uint8_t *midi = nullptr;
     size_t midi_len = 0;
     char *err = nullptr;
-    if (!v2m_transcribe(audio.data(), static_cast<int>(audio.size()),
-                        SAMPLE_RATE, &vp, &midi, &midi_len, &err))
+    char *frames_json = nullptr;
+    const bool ok = opts.frames
+        ? v2m_transcribe_frames(audio.data(), static_cast<int>(audio.size()),
+                                SAMPLE_RATE, &vp, &midi, &midi_len,
+                                &frames_json, &err)
+        : v2m_transcribe(audio.data(), static_cast<int>(audio.size()),
+                         SAMPLE_RATE, &vp, &midi, &midi_len, &err);
+    if (!ok)
     {
         std::cerr << "[ERROR] " << (err ? err : "transcription failed")
                   << std::endl;
@@ -637,6 +801,66 @@ int main(int argc, const char **argv)
     if (opts.verbose)
     {
         std::cout << "Wrote MIDI file to: " << midi_file << std::endl;
+    }
+
+    if (frames_json)
+    {
+        std::filesystem::path frames_file = midi_file;
+        frames_file.replace_extension(".frames.json");
+        std::ofstream frames_stream(frames_file);
+        frames_stream.write(frames_json, std::strlen(frames_json));
+        v2m_free(frames_json);
+        if (opts.verbose)
+        {
+            std::cout << "Wrote frame features to: " << frames_file
+                      << std::endl;
+        }
+    }
+
+    // Обзор материала (билд #47): не влияет на транскрипцию, поэтому сбой
+    // спектрограммы не отменяет записанный .mid. С билда #50 это обзор того
+    // же материала, что пошёл в модель (после --gate/--low-cut/--high-cut/
+    // --exp-comp) — как «Спектр» в GUI после [Транскрипт].
+    if (opts.spectrogram)
+    {
+        float *processed = nullptr;
+        int processed_n = 0;
+        char *proc_err = nullptr;
+        V2mSpectroParams sp;
+        v2m_spectro_params_default(&sp);
+        uint8_t *spec = nullptr;
+        int n_frames = 0;
+        int n_bands = 0;
+        char *spec_err = nullptr;
+        if (!v2m_process_audio(audio.data(), static_cast<int>(audio.size()),
+                               SAMPLE_RATE, &vp, &processed, &processed_n,
+                               &proc_err))
+        {
+            std::cerr << "[ERROR] process audio: "
+                      << (proc_err ? proc_err : "failed") << std::endl;
+            v2m_free(proc_err);
+        }
+        else if (!v2m_spectrogram(processed, processed_n, SAMPLE_RATE, &sp, &spec,
+                                  &n_frames, &n_bands, &spec_err))
+        {
+            std::cerr << "[ERROR] spectrogram: "
+                      << (spec_err ? spec_err : "failed") << std::endl;
+            v2m_free(spec_err);
+        }
+        else
+        {
+            std::filesystem::path spec_file = midi_file;
+            spec_file.replace_extension(".pgm");
+            write_spectrogram_pgm(spec_file, spec, n_frames, n_bands);
+            v2m_free(spec);
+            if (opts.verbose)
+            {
+                std::cout << "Spectrogram: " << n_frames << " frames x "
+                          << n_bands << " bands" << std::endl;
+                std::cout << "Wrote spectrogram to: " << spec_file << std::endl;
+            }
+        }
+        v2m_free(processed);
     }
 
     return 0;

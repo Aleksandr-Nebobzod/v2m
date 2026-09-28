@@ -5,8 +5,9 @@
 // the same tick form a chord (<chord/>). Notes crossing a measure boundary
 // are split with ties. Overlapping notes are distributed into voices
 // (greedy; the same-tick notes stay in one voice as a chord). Measures are
-// numbered from tick 0 (anacrusis is not detected). Key signature defaults
-// to C (fifths=0).
+// numbered from tick 0; the first measure may be an anacrusis (затакт) of
+// anacrusis_eighths eighth notes — see convert_smf_to_string. Key signature
+// defaults to C (fifths=0).
 //
 // Usage: midi2musicxml <input.mid> [output.musicxml]  (default: <input>.musicxml)
 
@@ -349,10 +350,14 @@ void write_note(std::string &out, const Note &n, int divisions, bool is_rest,
 } // namespace
 
 // Core conversion: SMF bytes -> MusicXML document string.
-// clef: 0 = G (treble), 1 = F (bass).
+// clef: 0 = G (treble), 1 = F (bass); fifths: the <key><fifths> value
+// (-7..7, 0 = no key signature), e.g. 1 for G major, -3 for Eb major;
+// anacrusis_eighths: затакт — the first measure is a partial one of N
+// eighth notes (0 = none), the first full measure starts right after it.
 bool convert_smf_to_string(const std::vector<uint8_t> &bytes,
-                           const std::string &title, int clef, std::string &out,
-                           std::string &err)
+                           const std::string &title, int clef, int fifths,
+                           int anacrusis_eighths,
+                           std::string &out, std::string &err)
 {
     Song song;
     if (!parse_smf(bytes, song) || song.notes.empty())
@@ -372,9 +377,38 @@ bool convert_smf_to_string(const std::vector<uint8_t> &bytes,
     }
     const int divisions = song.division * GRID_SCALE;
     const int L = song.ts_num * divisions; // ticks per measure
+    // Anacrusis (затакт): the first measure holds N eighth notes instead of a
+    // full one; N >= the full measure (eighths per measure) degenerates to none.
+    const int eighths_per_measure = song.ts_num * 8 / song.ts_den;
+    const int anacr = (anacrusis_eighths > 0 && anacrusis_eighths < eighths_per_measure)
+                          ? anacrusis_eighths * divisions / 2
+                          : 0;
     const int tempo_bpm = 60'000'000 / song.tempo_us;
     const int last_tick = song.notes.back().end_tick;
-    const int n_measures = (last_tick + L - 1) / L;
+    const int n_measures = anacr > 0
+                               ? 1 + (last_tick > anacr ? (last_tick - anacr + L - 1) / L : 0)
+                               : (last_tick + L - 1) / L;
+    // Measure m spans [m_start, m_end); the first measure may be the anacrusis.
+    auto measure_span = [&](int m, int &ms, int &me)
+    {
+        if (m == 0)
+        {
+            ms = 0;
+            me = anacr > 0 ? anacr : L;
+        }
+        else
+        {
+            ms = anacr + (m - 1) * L;
+            me = ms + L;
+        }
+    };
+    // The time signature is declared in the first full measure when the
+    // piece opens with an anacrusis (a pickup measure prints no meter).
+    auto ts_attr = [&]()
+    {
+        return "        <time><beats>" + std::to_string(song.ts_num) +
+               "</beats><beat-type>" + std::to_string(song.ts_den) + "</beat-type></time>\n";
+    };
 
     out.clear();
     out += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
@@ -402,16 +436,15 @@ bool convert_smf_to_string(const std::vector<uint8_t> &bytes,
 
     for (int m = 0; m < n_measures; ++m)
     {
-        const int m_start = m * L;
-        const int m_end = m_start + L;
+        int m_start = 0, m_end = L;
+        measure_span(m, m_start, m_end);
         out += "    <measure number=\"" + std::to_string(m + 1) + "\">\n";
         if (m == 0)
         {
             out += "      <attributes>\n";
             out += "        <divisions>" + std::to_string(divisions) + "</divisions>\n";
-            out += "        <key><fifths>0</fifths></key>\n";
-            out += "        <time><beats>" + std::to_string(song.ts_num) +
-                   "</beats><beat-type>" + std::to_string(song.ts_den) + "</beat-type></time>\n";
+            out += "        <key><fifths>" + std::to_string(fifths) + "</fifths></key>\n";
+            if (anacr == 0 || n_measures == 1) out += ts_attr();
             if (clef == 1)
                 out += "        <clef><sign>F</sign><line>4</line></clef>\n";
             else
@@ -422,6 +455,12 @@ bool convert_smf_to_string(const std::vector<uint8_t> &bytes,
                    "<per-minute>" + std::to_string(tempo_bpm) + "</per-minute></metronome></direction-type>\n"
                    "        <sound tempo=\"" + std::to_string(tempo_bpm) + "\"/>\n"
                    "      </direction>\n";
+        }
+        else if (m == 1 && anacr > 0)
+        {
+            // A pickup measure prints no meter: the time signature belongs
+            // to the first full measure.
+            out += "      <attributes>\n" + ts_attr() + "      </attributes>\n";
         }
 
         // A voice may have several segments crossing measure m (e.g. a
@@ -518,7 +557,7 @@ bool convert_smf_to_string(const std::vector<uint8_t> &bytes,
                 next_voice = !per_voice[w].empty();
             if (next_voice)
             {
-                out += "      <backup><duration>" + std::to_string(L) +
+                out += "      <backup><duration>" + std::to_string(m_end - m_start) +
                        "</duration></backup>\n";
             }
         }
@@ -554,7 +593,7 @@ int main(int argc, char **argv)
     }
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), {});
     std::string out, err;
-    if (!convert_smf_to_string(bytes, in_path.substr(in_path.find_last_of('/') + 1), 0, out, err))
+    if (!convert_smf_to_string(bytes, in_path.substr(in_path.find_last_of('/') + 1), 0, 0, 0, out, err))
     {
         std::fprintf(stderr, "midi2musicxml: %s: %s\n", in_path.c_str(), err.c_str());
         return 1;
@@ -575,11 +614,12 @@ int main(int argc, char **argv)
 // C ABI entry point for the v2m library (see src/libv2m.cpp / v2m.h)
 extern "C" int v2m_midi_to_musicxml(const uint8_t *midi, size_t len,
                                     const char *out_path, int clef,
+                                    int fifths, int anacrusis_eighths,
                                     char **err_out)
 {
     std::vector<uint8_t> bytes(midi, midi + len);
     std::string out, err;
-    if (!convert_smf_to_string(bytes, "Music", clef, out, err))
+    if (!convert_smf_to_string(bytes, "Music", clef, fifths, anacrusis_eighths, out, err))
     {
         if (err_out)
             *err_out = strdup(err.c_str());

@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>v2m — melody transcriber</title>
+<meta name="description" content="v2m turns sound into notes: record with a microphone or open a WAV file and get MIDI, ABC notation and MusicXML. Polyphonic melody transcription that runs offline on your own computer — no sign-up, no cloud. Free build for Linux.">
+<meta name="keywords" content="audio to MIDI converter, voice to notes, note recognition, melody transcription, sheet music from audio, WAV to MIDI, ABC notation, pitch detection, polyphonic transcription, transcribe music by ear, spectrogram, piano notes, guitar notes, MusicXML, song to notes, offline, Linux">
+<meta name="author" content="attplus.in">
+<meta property="og:title" content="v2m — melody transcriber">
+<meta property="og:description" content="Sound into notes: microphone or WAV to MIDI, ABC and MusicXML. Offline, on your own computer.">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --paper:    #f2f4f0;
+    --surface:  #ffffff;
+    --ink:      #16201b;
+    --muted:    #64736a;
+    --line:     #d5ddd6;
+    --green:    #2e7d4f;
+    --green-dk: #1f5c39;
+    --blue:     #2f6fa8;
+    --deep:     #0e1613;
+    --deep-ink: #e8efe9;
+
+    --step-0: 1rem;
+    --step-1: 1.2rem;
+    --step-2: 1.55rem;
+    --step-3: 2.05rem;
+    --step-4: clamp(2.3rem, 6vw, 3.6rem);
+
+    --gap: clamp(1rem, 3vw, 2rem);
+    --pad-block: clamp(3rem, 8vw, 6rem);
+    --radius: 10px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:    #0c1310;
+      --surface:  #131d18;
+      --ink:      #e8efe9;
+      --muted:    #93a59a;
+      --line:     #26332c;
+      --green:    #5fbf84;
+      --green-dk: #7fd39f;
+      --blue:     #6ba6d8;
+      --deep:     #070c0a;
+      --deep-ink: #e8efe9;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:    #0c1310;
+    --surface:  #131d18;
+    --ink:      #e8efe9;
+    --muted:    #93a59a;
+    --line:     #26332c;
+    --green:    #5fbf84;
+    --green-dk: #7fd39f;
+    --blue:     #6ba6d8;
+    --deep:     #070c0a;
+    --deep-ink: #e8efe9;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Golos Text", "Segoe UI", system-ui, sans-serif;
+    font-size: var(--step-0);
+    line-height: 1.6;
+    padding: 0 max(16px, 4vw);
+    padding-block: 0;
+  }
+
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  h1, h2, h3 {
+    font-family: "Unbounded", "Golos Text", system-ui, sans-serif;
+    font-weight: 600;
+    line-height: 1.15;
+    text-wrap: balance;
+    margin: 0;
+  }
+  h1 { font-size: var(--step-4); letter-spacing: -0.02em; }
+  h2 { font-size: var(--step-3); letter-spacing: -0.01em; }
+  h3 { font-size: var(--step-1); }
+  p  { margin: 0; }
+
+  .mono {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.86em;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--gap);
+    flex-wrap: wrap;
+    padding-block: 1.6rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    font-family: "Unbounded", system-ui, sans-serif;
+    font-weight: 700;
+    font-size: 1.3rem;
+    letter-spacing: -0.02em;
+  }
+  .brand small {
+    display: block;
+    font-family: "Golos Text", system-ui, sans-serif;
+    font-weight: 400;
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .lang { display: flex; gap: 0.4rem; align-items: center; }
+  .lang a {
+    color: var(--muted);
+    text-decoration: none;
+    padding: 0.3rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid transparent;
+  }
+  .lang a[aria-current="true"] {
+    color: var(--ink);
+    border-color: var(--line);
+    background: var(--surface);
+  }
+  .lang a:hover { border-color: var(--line); }
+
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: clamp(1.5rem, 4vw, 3rem);
+    align-items: center;
+    padding-block: clamp(2.5rem, 7vw, 5rem);
+  }
+  @media (max-width: 780px) { .hero { grid-template-columns: 1fr; } }
+
+  .hero .lead {
+    font-size: var(--step-1);
+    color: var(--muted);
+    max-width: 46ch;
+    margin-top: 1.1rem;
+  }
+  .eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--green);
+    margin-bottom: 1rem;
+  }
+
+  .cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.9rem;
+    align-items: center;
+    margin-top: 2rem;
+  }
+  .btn {
+    display: inline-block;
+    background: var(--green);
+    color: #fff;
+    font-weight: 600;
+    text-decoration: none;
+    padding: 0.85rem 1.5rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--green-dk);
+  }
+  .btn:hover { background: var(--green-dk); }
+  .btn.secondary {
+    background: transparent;
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  .btn.secondary:hover { border-color: var(--green); color: var(--green); }
+  .cta-note { color: var(--muted); font-size: 0.88rem; }
+
+  .figure { margin: 0; }
+  .figure canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .figure figcaption {
+    color: var(--muted);
+    font-size: 0.82rem;
+    margin-top: 0.6rem;
+  }
+
+  section { padding-block: var(--pad-block); border-top: 1px solid var(--line); }
+  .section-head { max-width: 62ch; margin-bottom: clamp(1.5rem, 4vw, 2.5rem); }
+  .section-head p { color: var(--muted); margin-top: 0.8rem; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: var(--gap);
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1.3rem 1.3rem 1.4rem;
+  }
+  .card h3 { margin-bottom: 0.5rem; }
+  .card p { color: var(--muted); font-size: 0.94rem; }
+  .card .tag {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--blue);
+    display: block;
+    margin-bottom: 0.7rem;
+  }
+
+  /* — app screenshot — */
+  .shot {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr);
+    gap: clamp(1.5rem, 4vw, 3rem);
+    align-items: center;
+  }
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--deep);
+  }
+  .shot ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1rem; }
+  .shot li { color: var(--muted); font-size: 0.94rem; }
+  .shot li strong { display: block; color: var(--ink); font-weight: 600; margin-bottom: 0.15rem; }
+  @media (max-width: 760px) { .shot { grid-template-columns: minmax(0, 1fr); } }
+
+  .steps { display: grid; gap: var(--gap); counter-reset: step; }
+  .step {
+    display: grid;
+    grid-template-columns: 2.4rem minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+  }
+  .step::before {
+    counter-increment: step;
+    content: counter(step);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.95rem;
+    color: var(--green);
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    width: 2.4rem;
+    height: 2.4rem;
+    display: grid;
+    place-items: center;
+    background: var(--surface);
+  }
+  .step p { color: var(--muted); }
+  pre {
+    background: var(--deep);
+    color: var(--deep-ink);
+    padding: 0.9rem 1.1rem;
+    border-radius: var(--radius);
+    overflow-x: auto;
+    margin: 0.7rem 0 0;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  code { font-family: "JetBrains Mono", monospace; font-size: 0.88em; }
+
+  .specs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--gap);
+  }
+  .spec {
+    border-top: 2px solid var(--green);
+    padding-top: 0.9rem;
+  }
+  .spec dt {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.74rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .spec dd { margin: 0.35rem 0 0; font-size: 1rem; }
+
+  .uses { display: grid; gap: 0.9rem; max-width: 70ch; }
+  .uses li { color: var(--muted); }
+  .uses li strong { color: var(--ink); font-weight: 600; }
+  ul.uses { padding-left: 1.2rem; margin: 0; }
+
+  footer {
+    background: var(--deep);
+    color: var(--deep-ink);
+    margin-inline: calc(-1 * max(16px, 4vw));
+    padding-inline: max(16px, 4vw);
+    padding-block: clamp(2.5rem, 6vw, 4rem);
+    margin-top: var(--pad-block);
+  }
+  footer a { color: var(--deep-ink); }
+  footer .cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--gap);
+  }
+  footer p, footer li { color: #a9b8ae; font-size: 0.9rem; }
+  footer h3 { font-size: 1rem; margin-bottom: 0.6rem; }
+  footer ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.35rem; }
+
+  a { color: var(--green); }
+  a:focus-visible, .btn:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700&family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+</head>
+<body>
+
+<header class="wrap">
+  <div class="brand">v2m<small>Melody transcriber</small></div>
+  <nav class="lang" aria-label="Page language">
+    <a href="index.html" hreflang="ru">RU</a>
+    <a href="en.html" aria-current="true" hreflang="en">EN</a>
+  </nav>
+</header>
+
+<main class="wrap">
+
+  <section class="hero" style="border-top:none">
+    <div>
+      <div class="eyebrow">Audio → notes → MIDI</div>
+      <h1>Sing it or play it — get the notes</h1>
+      <p class="lead">
+        v2m listens to a recording — from a microphone or a WAV file — and writes
+        the notes down: a polyphonic part with pitch, timing and loudness for every
+        note. You see how it was decided on the spectrogram, fix what needs fixing,
+        and export to MIDI, ABC notation or MusicXML.
+      </p>
+      <div class="cta-row">
+        <a class="btn" href="download/v2m-linux-x64-1.0.0.tar.gz" download>Download for Linux</a>
+        <a class="btn secondary" href="#how">How to run it</a>
+      </div>
+      <p class="cta-note mono" style="margin-top:1rem">
+        Linux x86_64 · Java 17+ · 43 MB · offline, no sign-up
+      </p>
+    </div>
+
+    <figure class="figure">
+      <canvas id="wave" width="1000" height="560" role="img"
+              aria-label="Diagram: a waveform and spectrogram turning into a staff with notes"></canvas>
+      <figcaption>The spectrogram of a recording and the notes that come out of it — this is what the program shows.</figcaption>
+    </figure>
+  </section>
+
+  <section id="what">
+    <div class="section-head">
+      <h2>What it does</h2>
+      <p>One tool for the whole way from sound to notation — everything is computed on your own computer, nothing goes to a server.</p>
+    </div>
+    <div class="cards">
+      <article class="card">
+        <span class="tag">Input</span>
+        <h3>Microphone and WAV</h3>
+        <p>Record inside the program with a “-0:01…0:00” count-in, or open a WAV file. 22,050 Hz — the sample rate the recognition model was trained on.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Recognition</span>
+        <h3>Polyphonic transcription</h3>
+        <p>Hears several notes at once: chords, intervals, several voices. Each note gets a pitch, an onset, a duration and a loudness.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Inspection</span>
+        <h3>Spectrogram</h3>
+        <p>See what the result was built from: spectrogram frames, note boundaries, four colour scales, pitch range and time zoom.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Editing</span>
+        <h3>Note editor and versions</h3>
+        <p>Fix or mute notes and compare processing versions side by side, so you can hear exactly what a setting changed.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Output</span>
+        <h3>MIDI, ABC, MusicXML</h3>
+        <p>Export to MIDI, MIDI with context, ABC notation and MusicXML — ready for a notation editor, a sequencer or a practice notebook.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Tuning</span>
+        <h3>Controls for the analysis</h3>
+        <p>Noise gate, filters, compressor-expander, rhythm, melody, harmonisation, key and time signature, presets per instrument.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="look">
+    <div class="section-head">
+      <h2>What it looks like</h2>
+      <p>One window: recording or a file, the analysis controls, and the result on the «Spectrum», «Quanta», «Tones» and «ABC» tabs. The interface is in Russian for now.</p>
+    </div>
+    <div class="shot">
+      <img src="img/app.png" width="790" height="570" alt="The v2m window: microphone recording, WAV file picker, processing controls, and the Transcribe and Export buttons">
+      <ul>
+        <li><strong>Recording and file</strong>Microphone with a count-in, or a WAV from disk — with a Save button next to it.</li>
+        <li><strong>Processing controls</strong>Noise gate, low/high-cut filter, compressor-expander, rhythm and melody — with presets per instrument.</li>
+        <li><strong>Result</strong>Transcribe runs the analysis; Export hands over MIDI, ABC or MusicXML.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="section-head">
+      <h2>How to run it</h2>
+      <p>Three steps. Nothing is installed system-wide: unpack the archive anywhere and start it.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div>
+          <h3>Download the archive</h3>
+          <p>The program and every library it needs, the recognition engine included, are inside. No internet connection is required to work.</p>
+          <p class="mono" style="margin-top:0.5rem">
+            <a href="download/v2m-linux-x64-1.0.0.tar.gz" download>v2m-linux-x64-1.0.0.tar.gz</a> · 43 MB
+          </p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Unpack it</h3>
+          <pre>tar -xzf v2m-linux-x64-1.0.0.tar.gz
+cd v2m-linux-x64-1.0.0</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Start it</h3>
+          <pre>./run.sh</pre>
+          <p style="margin-top:0.6rem">The script checks that Java is present and tells you how to install it if it is not.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="specs">
+    <div class="section-head">
+      <h2>What you need</h2>
+    </div>
+    <dl class="specs">
+      <div class="spec">
+        <dt>System</dt>
+        <dd>Linux x86_64</dd>
+      </div>
+      <div class="spec">
+        <dt>Java</dt>
+        <dd>17 or newer</dd>
+      </div>
+      <div class="spec">
+        <dt>Size</dt>
+        <dd>43 MB download, ~64 MB unpacked</dd>
+      </div>
+      <div class="spec">
+        <dt>Internet</dt>
+        <dd>Not required</dd>
+      </div>
+      <div class="spec">
+        <dt>Price</dt>
+        <dd>Free</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section id="uses">
+    <div class="section-head">
+      <h2>What people use it for</h2>
+      <p>Anywhere a melody already sounds but the notes do not exist yet.</p>
+    </div>
+    <ul class="uses">
+      <li><strong>Work out a song.</strong> An audio-to-MIDI converter: a recording or a played part becomes notes and a MIDI file to build on.</li>
+      <li><strong>Capture an idea by voice.</strong> Voice to notes: a sung phrase turns into a staff line — handy when no instrument is at hand.</li>
+      <li><strong>Transcribe a solo or chords by ear.</strong> Polyphonic transcription shows every note at once, simultaneous ones included.</li>
+      <li><strong>Teach and learn music.</strong> The recording sits next to its notes: spectrogram, staff and ABC notation in one window.</li>
+      <li><strong>Prepare notation.</strong> MusicXML opens in notation editors, MIDI in sequencers, ABC stays readable in plain text.</li>
+      <li><strong>Keep the audio local.</strong> Nothing is uploaded: no account, no subscription, no cloud.</li>
+    </ul>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap cols">
+    <div>
+      <h3>v2m — melody transcriber</h3>
+      <p>Audio into notes and MIDI. Built by <a href="http://attplus.in/v2m">attplus.in</a>.</p>
+    </div>
+    <div>
+      <h3>Download</h3>
+      <ul>
+        <li><a href="download/v2m-linux-x64-1.0.0.tar.gz" download>Linux x86_64 · tar.gz · 43 MB</a></li>
+        <li><a href="index.html">Русская версия</a></li>
+      </ul>
+    </div>
+    <div>
+      <h3>Technology</h3>
+      <ul>
+        <li>Core — a C++ port of basicpitch.cpp (MIT)</li>
+        <li>Underlying algorithm — Basic Pitch (Spotify, Apache 2.0)</li>
+        <li>Interface — Kotlin, Compose Desktop</li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<script>
+// "Sound → notes" illustration: a spectrogram on the left, the same material
+// written down as notes on the right. Drawn once on load from a fixed seed.
+(function () {
+  const cv = document.getElementById('wave');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+
+  function css(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  let seed = 20260921;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+
+  function draw() {
+    const ink = css('--ink') || '#16201b';
+    const green = css('--green') || '#2e7d4f';
+    const blue = css('--blue') || '#2f6fa8';
+    const line = css('--line') || '#d5ddd6';
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = css('--surface') || '#fff';
+    ctx.fillRect(0, 0, W, H);
+
+    const bars = 64, bw = (W * 0.46) / bars, base = H - 80;
+    for (let i = 0; i < bars; i++) {
+      const env = Math.exp(-Math.pow((i - 20) / 22, 2)) * 0.8 + Math.exp(-Math.pow((i - 44) / 14, 2)) * 0.6;
+      const h = Math.max(6, (env * 0.75 + rnd() * 0.35) * (H - 180));
+      ctx.fillStyle = i / bars < 0.5 ? green : blue;
+      ctx.globalAlpha = 0.25 + 0.6 * (h / (H - 180));
+      ctx.fillRect(14 + i * bw, base - h, bw * 0.72, h);
+    }
+    ctx.globalAlpha = 1;
+
+    const mx = W * 0.5;
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 8]);
+    ctx.beginPath();
+    ctx.moveTo(mx, 40);
+    ctx.lineTo(mx, H - 40);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const sx = W * 0.56, sw = W * 0.4, gap = 34, top = H / 2 - gap * 2;
+    ctx.strokeStyle = ink;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath();
+      ctx.moveTo(sx, top + i * gap);
+      ctx.lineTo(sx + sw, top + i * gap);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    const notes = [
+      { x: 0.06, step: 4, len: 1.6 }, { x: 0.22, step: 3, len: 0.9 },
+      { x: 0.34, step: 5, len: 0.9 }, { x: 0.46, step: 2, len: 1.6 },
+      { x: 0.62, step: 4, len: 0.9 }, { x: 0.74, step: 1, len: 2.4 },
+      { x: 0.9, step: 3, len: 1.2 }
+    ];
+    const noteW = 17, noteH = 12;
+    notes.forEach(n => {
+      const cx = sx + n.x * sw, cy = top + gap * 4 - n.step * (gap / 2);
+      ctx.fillStyle = ink;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, noteW, noteH, -0.32, 0, Math.PI * 2);
+      ctx.fill();
+      const stemUp = n.step < 4;
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(cx + (stemUp ? noteW - 2 : -noteW + 2), cy);
+      ctx.lineTo(cx + (stemUp ? noteW - 2 : -noteW + 2), cy - (stemUp ? 1 : -1) * 58);
+      ctx.stroke();
+      if (n.len < 1.5) {
+        const fx = cx + (stemUp ? noteW - 2 : -noteW + 2);
+        const fy = cy - (stemUp ? 58 : -58);
+        ctx.beginPath();
+        ctx.moveTo(fx, fy);
+        ctx.quadraticCurveTo(fx + 20, fy + 14, fx + 6, fy + 34);
+        ctx.stroke();
+      }
+    });
+
+    ctx.fillStyle = css('--muted') || '#64736a';
+    ctx.font = '500 20px "JetBrains Mono", monospace';
+    ctx.fillText('spectrogram', 14, H - 40);
+    ctx.fillText('notation', sx, H - 40);
+  }
+
+  draw();
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  }
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+})();
+</script>
+
+</body>
+</html>

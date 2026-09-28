@@ -1,0 +1,1118 @@
+{
+  "meta": {
+    "project_name": "v2m",
+    "last_updated": "2026-09-15T23:56:44+03:00",
+    "schema_version": "1.0",
+    "aura_friday_synced": false
+  },
+  "tree": [
+    {
+      "path": ".claude/commands/index.md",
+      "type": "file",
+      "description": "Команда /index: обновление индекса (пусто — инкрементально, --full — переиндексация)",
+      "tags": [
+        "config"
+      ],
+      "dependencies": [
+        ".claude/skills/index-maintainer.md"
+      ],
+      "hash": "sha256:e0aca98d99c2"
+    },
+    {
+      "path": ".claude/settings.json",
+      "type": "file",
+      "description": "Настройки Claude Code (worktree: bgIsolation none)",
+      "tags": [
+        "config"
+      ],
+      "dependencies": [],
+      "hash": "sha256:05aa8f4b15dc"
+    },
+    {
+      "path": ".claude/skills/index-maintainer.md",
+      "type": "file",
+      "description": "Скилл: создание и инкрементальное обновление INDEX.json (схема, протоколы)",
+      "tags": [
+        "config",
+        "docs"
+      ],
+      "dependencies": [
+        "INDEX.json"
+      ],
+      "hash": "sha256:3706d2eda106"
+    },
+    {
+      "path": ".gitignore",
+      "type": "file",
+      "description": "Игнорируемые пути: libs/, сборочные артефакты, data-выходы",
+      "tags": [
+        "config"
+      ],
+      "dependencies": [],
+      "hash": "sha256:d547660ed78d"
+    },
+    {
+      "path": "CLAUDE.md",
+      "type": "file",
+      "description": "Инструкции проекта для Claude Code: структура, рабочий процесс, правила ведения документов",
+      "tags": [
+        "docs",
+        "config"
+      ],
+      "dependencies": [
+        "INDEX.md",
+        "README.md"
+      ],
+      "hash": "sha256:adb8296b478c"
+    },
+    {
+      "path": "INDEX.md",
+      "type": "file",
+      "description": "Индекс рабочей области: структура, карта компонентов, процесс (обновлён 2026-09-12; отстаёт от билдов #50-#56)",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [],
+      "hash": "sha256:d2ec9e422d9d"
+    },
+    {
+      "path": "README.md",
+      "type": "file",
+      "description": "Команды CLI, принципы обработки, ручки; подвал — лист регистрации изменений",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src_cli/basicpitch.cpp"
+      ],
+      "hash": "sha256:578547bf1c8b"
+    },
+    {
+      "path": "app",
+      "type": "directory",
+      "description": "Kotlin-приложение (KMP: shared + desktopApp, Compose Desktop; JNI → libv2m)",
+      "tags": [
+        "kotlin",
+        "gui"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "app/build.gradle.kts",
+      "type": "file",
+      "description": "Корневой сборочный скрипт KMP-приложения",
+      "tags": [
+        "build",
+        "kotlin"
+      ],
+      "dependencies": [],
+      "hash": "sha256:b863c229c25c"
+    },
+    {
+      "path": "app/desktopApp/build.gradle.kts",
+      "type": "file",
+      "description": "Сборка desktopApp: Compose Desktop, JNI к libv2m.so, самотест",
+      "tags": [
+        "build",
+        "kotlin"
+      ],
+      "dependencies": [
+        "app/shared/build.gradle.kts"
+      ],
+      "hash": "sha256:fdaab1a14963"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/composeResources",
+      "type": "directory",
+      "description": "Ресурсы GUI: иконки (svg) и звуки кнопок (counIn.mid, tonica.mid)",
+      "tags": [
+        "resources",
+        "gui"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/AbcExport.kt",
+      "type": "file",
+      "description": "Экспорт разобранной песни в текст ABC-нотации",
+      "tags": [
+        "kotlin",
+        "export"
+      ],
+      "dependencies": [
+        "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Midi.kt"
+      ],
+      "hash": "sha256:b8ff4727b509"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/App.kt",
+      "type": "file",
+      "description": "Главный экран: фреймы секций, состояние, прогон, запись, экспорт, версии",
+      "tags": [
+        "kotlin",
+        "gui"
+      ],
+      "dependencies": [
+        "app/shared/src/jvmMain/kotlin/com/v2m/app/V2mEngine.kt"
+      ],
+      "hash": "sha256:8713b2c8fe8f"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/FramesSummary.kt",
+      "type": "file",
+      "description": "Строки-паспорта кадровых признаков для фрейма «Отчёт» (схема v2m-frame-features-2)",
+      "tags": [
+        "kotlin"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/frame_features.cpp"
+      ],
+      "hash": "sha256:4837ea23de99"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Instruments.kt",
+      "type": "file",
+      "description": "Список инструментов General MIDI по семействам (номера 1..128)",
+      "tags": [
+        "kotlin"
+      ],
+      "dependencies": [],
+      "hash": "sha256:69e8cd3c418d"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Key.kt",
+      "type": "file",
+      "description": "Тональность из строки отчёта ядра («mode fit: C major (Ionian)»)",
+      "tags": [
+        "kotlin"
+      ],
+      "dependencies": [],
+      "hash": "sha256:1cd29f1c00a1"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Level.kt",
+      "type": "file",
+      "description": "Уровни для полосы-индикатора записи/воспроизведения и зоны цвета",
+      "tags": [
+        "kotlin",
+        "gui"
+      ],
+      "dependencies": [],
+      "hash": "sha256:8d29fbb6b964"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Log.kt",
+      "type": "file",
+      "description": "Журнал отладки ~/.v2m/v2m-debug.log + перехват стандартного вывода",
+      "tags": [
+        "kotlin",
+        "debug"
+      ],
+      "dependencies": [],
+      "hash": "sha256:d3336fb50b13"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Main.kt",
+      "type": "file",
+      "description": "Точка входа и самотест (номер билда BUILD, проверки движка и GUI-логики)",
+      "tags": [
+        "kotlin",
+        "test"
+      ],
+      "dependencies": [
+        "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/App.kt"
+      ],
+      "hash": "sha256:bd92370c5392"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Midi.kt",
+      "type": "file",
+      "description": "Чтение/запись SMF, имена нот, разбор мелодии для показа",
+      "tags": [
+        "kotlin"
+      ],
+      "dependencies": [],
+      "hash": "sha256:bcddf9835342"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/MidiMeta.kt",
+      "type": "file",
+      "description": "Паспорт прогона FF 7F: параметры в JSON (buildParamsJson, paramsCli)",
+      "tags": [
+        "kotlin"
+      ],
+      "dependencies": [
+        "app/shared/src/jvmMain/kotlin/com/v2m/app/V2mEngine.kt"
+      ],
+      "hash": "sha256:967cf89864b2"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/MidiPlayer.kt",
+      "type": "file",
+      "description": "Воспроизведение MIDI внутри приложения (javax.sound.midi + Gervill), без временного файла",
+      "tags": [
+        "kotlin",
+        "audio"
+      ],
+      "dependencies": [],
+      "hash": "sha256:e271b3bd7888"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/NativeCapture.kt",
+      "type": "file",
+      "description": "Захват микрофона через ALSA (JNI → libv2m.so) — замена javax.sound (билд #43)",
+      "tags": [
+        "kotlin",
+        "audio"
+      ],
+      "dependencies": [
+        "basicpitch/src/libv2m/v2m_capture.cpp"
+      ],
+      "hash": "sha256:0bbe9495f1e4"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/NoteChart.kt",
+      "type": "file",
+      "description": "Гистограмма «Звучание»: ноты столбиками на канве высота × время, хит-тест по заливке",
+      "tags": [
+        "kotlin",
+        "gui"
+      ],
+      "dependencies": [
+        "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Midi.kt"
+      ],
+      "hash": "sha256:cfb6333ad116"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/NoteEdit.kt",
+      "type": "file",
+      "description": "Правка одной ноты SMF (редактор «Тоны»): полутон, микротон, mute",
+      "tags": [
+        "kotlin",
+        "gui"
+      ],
+      "dependencies": [
+        "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Midi.kt"
+      ],
+      "hash": "sha256:de22a44615be"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Preferences.kt",
+      "type": "file",
+      "description": "Preferences GUI: загрузка/сохранение ~/.v2m/prefs.properties, миграции значений",
+      "tags": [
+        "kotlin"
+      ],
+      "dependencies": [
+        "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Presets.kt"
+      ],
+      "hash": "sha256:bbebf1509eb8"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Presets.kt",
+      "type": "file",
+      "description": "Пресеты: дифф параметров от дефолтов движка, чтение/запись ~/.v2m/presets.properties",
+      "tags": [
+        "kotlin"
+      ],
+      "dependencies": [
+        "app/shared/src/jvmMain/kotlin/com/v2m/app/V2mEngine.kt"
+      ],
+      "hash": "sha256:b611a783ac57"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/SpectrogramView.kt",
+      "type": "file",
+      "description": "Вкладка «Спектр»: палитра-гаммы, инверсия темы, RAW по нажатию, метка «конец нот»",
+      "tags": [
+        "kotlin",
+        "gui"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/spectrogram.hpp"
+      ],
+      "hash": "sha256:8b2b13961fe9"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Strings.kt",
+      "type": "file",
+      "description": "Все пользовательские строки в одном месте (один язык; задел под мультиязычность)",
+      "tags": [
+        "kotlin",
+        "i18n"
+      ],
+      "dependencies": [],
+      "hash": "sha256:fcec32dcab33"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/Wav.kt",
+      "type": "file",
+      "description": "Чтение PCM WAV в моно float (8/16 бит, любое число каналов) + длительность из заголовка",
+      "tags": [
+        "kotlin",
+        "audio"
+      ],
+      "dependencies": [],
+      "hash": "sha256:4f087cd0c8c9"
+    },
+    {
+      "path": "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/WavPlayer.kt",
+      "type": "file",
+      "description": "Воспроизведение последней записи из памяти (кнопка ▶ у таймера)",
+      "tags": [
+        "kotlin",
+        "audio"
+      ],
+      "dependencies": [
+        "app/shared/src/jvmMain/kotlin/com/v2m/app/AudioCapture.kt"
+      ],
+      "hash": "sha256:9573448627fc"
+    },
+    {
+      "path": "app/gradle.properties",
+      "type": "file",
+      "description": "Свойства Gradle (JVM-аргументы, флаги Compose)",
+      "tags": [
+        "build",
+        "kotlin"
+      ],
+      "dependencies": [],
+      "hash": "sha256:ee5355275945"
+    },
+    {
+      "path": "app/gradle/wrapper/gradle-wrapper.properties",
+      "type": "file",
+      "description": "Версия и адрес дистрибутива Gradle",
+      "tags": [
+        "build"
+      ],
+      "dependencies": [],
+      "hash": "sha256:cdab1ffb4392"
+    },
+    {
+      "path": "app/gradlew",
+      "type": "file",
+      "description": "Gradle wrapper (запуск сборки приложения)",
+      "tags": [
+        "build"
+      ],
+      "dependencies": [],
+      "hash": "sha256:734b3879d350"
+    },
+    {
+      "path": "app/gradlew.bat",
+      "type": "file",
+      "description": "Gradle wrapper для Windows",
+      "tags": [
+        "build"
+      ],
+      "dependencies": [],
+      "hash": "sha256:57931b17dd22"
+    },
+    {
+      "path": "app/settings.gradle.kts",
+      "type": "file",
+      "description": "Состав модулей Gradle: shared, desktopApp",
+      "tags": [
+        "build",
+        "kotlin"
+      ],
+      "dependencies": [
+        "app/shared/build.gradle.kts",
+        "app/desktopApp/build.gradle.kts"
+      ],
+      "hash": "sha256:60a25a203116"
+    },
+    {
+      "path": "app/shared/build.gradle.kts",
+      "type": "file",
+      "description": "Сборка модуля shared (KMP-шов)",
+      "tags": [
+        "build",
+        "kotlin"
+      ],
+      "dependencies": [],
+      "hash": "sha256:a911e4bdc2e7"
+    },
+    {
+      "path": "app/shared/src/jvmMain/kotlin/com/v2m/app/AudioCapture.kt",
+      "type": "file",
+      "description": "Платформенно-нейтральный интерфейс захвата звука (шов для Android)",
+      "tags": [
+        "kotlin"
+      ],
+      "dependencies": [
+        "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/NativeCapture.kt"
+      ],
+      "hash": "sha256:70a3446d2ad9"
+    },
+    {
+      "path": "app/shared/src/jvmMain/kotlin/com/v2m/app/V2mEngine.kt",
+      "type": "file",
+      "description": "Обёртка JNI над libv2m: параметры, транскрипция, спектрограмма, обработка аудио",
+      "tags": [
+        "kotlin",
+        "core"
+      ],
+      "dependencies": [
+        "basicpitch/src/libv2m/v2m_jni.cpp"
+      ],
+      "hash": "sha256:149fcaee5abb"
+    },
+    {
+      "path": "basicpitch",
+      "type": "directory",
+      "description": "Код ядра: клон basicpitch.cpp с субмодулями + наши модули и сборка",
+      "tags": [
+        "cpp",
+        "core"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "basicpitch/build",
+      "type": "directory",
+      "description": "Сборочный каталог CMake CLI; basicpitch — собранный автономный бинарник",
+      "tags": [
+        "build"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/.clang-format",
+      "type": "file",
+      "description": "Стиль форматирования C++",
+      "tags": [
+        "config"
+      ],
+      "dependencies": [],
+      "hash": "sha256:933d4a65385f"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/.gitmodules",
+      "type": "file",
+      "description": "Субмодули: basic-pitch, eigen, libnyquist, libremidi, onnxruntime, oboe-resampler",
+      "tags": [
+        "config"
+      ],
+      "dependencies": [],
+      "hash": "sha256:a249747d2e98"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/LICENSE",
+      "type": "file",
+      "description": "Лицензия апстрима (MIT)",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [],
+      "hash": "sha256:a098fd7245cd"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/README.md",
+      "type": "file",
+      "description": "README апстрима basicpitch.cpp",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [],
+      "hash": "sha256:5a20fab52752"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/ort-model",
+      "type": "directory",
+      "description": "Модель: model.onnx/model.ort и сгенерированные веса (.c/.h) — бинарники, в индексе не перечисляются",
+      "tags": [
+        "model"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/scripts/build-ort-linux.sh",
+      "type": "file",
+      "description": "Сборка ONNX Runtime под Linux",
+      "tags": [
+        "build",
+        "script"
+      ],
+      "dependencies": [],
+      "hash": "sha256:44f66cc0b74e"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/scripts/build-ort-wasm.sh",
+      "type": "file",
+      "description": "Сборка ONNX Runtime под WASM",
+      "tags": [
+        "build",
+        "script"
+      ],
+      "dependencies": [],
+      "hash": "sha256:8d44b039ad61"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/scripts/convert-model-to-ort.sh",
+      "type": "file",
+      "description": "Конвертация model.onnx в ORT-формат (.ort, .c/.h)",
+      "tags": [
+        "build",
+        "script"
+      ],
+      "dependencies": [],
+      "hash": "sha256:ed9a67884f40"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/scripts/python_inference.py",
+      "type": "file",
+      "description": "Эталонный python-инференс апстрима (для сверки)",
+      "tags": [
+        "python",
+        "reference"
+      ],
+      "dependencies": [],
+      "hash": "sha256:54a918f87161"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/scripts/requirements.txt",
+      "type": "file",
+      "description": "Зависимости python-скриптов",
+      "tags": [
+        "python"
+      ],
+      "dependencies": [],
+      "hash": "sha256:5578fab36462"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/audio_effects.cpp",
+      "type": "file",
+      "description": "Аудиоэффекты до модели: НЧ/ВЧ-срезы, шумоподавитель, компрессор-экспандер (Р16)",
+      "tags": [
+        "cpp",
+        "dsp"
+      ],
+      "dependencies": [],
+      "hash": "sha256:394be0ea6866"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/audio_effects.hpp",
+      "type": "file",
+      "description": "Интерфейс аудиоэффектов (параметры обработки материала)",
+      "tags": [
+        "cpp",
+        "dsp"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/audio_effects.cpp"
+      ],
+      "hash": "sha256:3b7278d94fc2"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/basicpitch.hpp",
+      "type": "file",
+      "description": "API ядра + ModelParams/HarmonizeParams и константы-«ручки» (энергия, стабильность питча)",
+      "tags": [
+        "cpp",
+        "core"
+      ],
+      "dependencies": [],
+      "hash": "sha256:3f5963088103"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/contour_smoothing.cpp",
+      "type": "file",
+      "description": "Медианное сглаживание контура высоты и активаций звучания",
+      "tags": [
+        "cpp",
+        "core"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/basicpitch.hpp"
+      ],
+      "hash": "sha256:d119628ce186"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/frame_features.cpp",
+      "type": "file",
+      "description": "Сводка кадровых признаков для .frames.json (схема v2m-frame-features-2)",
+      "tags": [
+        "cpp",
+        "core"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/ort_inference.cpp"
+      ],
+      "hash": "sha256:44ff36e2e59e"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/harmonize.cpp",
+      "type": "file",
+      "description": "Постобработка списка нот: слияние фрагментов, сброс мелких бендов, сдвиг/лад, стабильность питча",
+      "tags": [
+        "cpp",
+        "core"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/midi_notes.cpp"
+      ],
+      "hash": "sha256:d0be22170657"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/midi_notes.cpp",
+      "type": "file",
+      "description": "Сборка нот из кадровых вероятностей и запись MIDI: find_peaks, energy_tol, min_note_len, питч-бенды",
+      "tags": [
+        "cpp",
+        "core"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/basicpitch.hpp"
+      ],
+      "hash": "sha256:6ac74482474a"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/ort_inference.cpp",
+      "type": "file",
+      "description": "Инференс ONNXRuntime: окна 2 с, склейка чанков (n_overlapping_frames)",
+      "tags": [
+        "cpp",
+        "core"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/basicpitch.hpp"
+      ],
+      "hash": "sha256:be4554f80ded"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/rhythm.cpp",
+      "type": "file",
+      "description": "Ритмизация и квантование нот (сетка, темп, размер)",
+      "tags": [
+        "cpp",
+        "core"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/midi_notes.cpp"
+      ],
+      "hash": "sha256:9b28ea77562c"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/spectrogram.cpp",
+      "type": "file",
+      "description": "Спектрограмма входа: multi-resolution STFT (окна 256/1024/4096, hop 256), 120 лог-полос",
+      "tags": [
+        "cpp",
+        "dsp"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/spectrogram.hpp"
+      ],
+      "hash": "sha256:03f863a3ae8d"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src/spectrogram.hpp",
+      "type": "file",
+      "description": "Структура спектрограммы и параметры расчёта (границы полос, окна, наклон)",
+      "tags": [
+        "cpp",
+        "dsp"
+      ],
+      "dependencies": [],
+      "hash": "sha256:87f940205ba0"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src_cli/CMakeLists.txt",
+      "type": "file",
+      "description": "Сборочный скрипт CLI (источник конфигурации basicpitch/build)",
+      "tags": [
+        "build",
+        "cmake"
+      ],
+      "dependencies": [],
+      "hash": "sha256:cd6fc6575993"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src_cli/basicpitch.cpp",
+      "type": "file",
+      "description": "CLI: разбор ручек, прогон, отчёты, запись .mid/.pgm",
+      "tags": [
+        "cpp",
+        "cli"
+      ],
+      "dependencies": [
+        "basicpitch/src/libv2m/libv2m.cpp"
+      ],
+      "hash": "sha256:afaf72d87fbc"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src_wasm/CMakeLists.txt",
+      "type": "file",
+      "description": "Сборка WASM-версии",
+      "tags": [
+        "build",
+        "cmake"
+      ],
+      "dependencies": [],
+      "hash": "sha256:6d22f7a08e6c"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/src_wasm/basicpitch.cpp",
+      "type": "file",
+      "description": "Функция WASM для веб-демо (наследие апстрима)",
+      "tags": [
+        "cpp",
+        "wasm"
+      ],
+      "dependencies": [],
+      "hash": "sha256:746604b68c74"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/vendor",
+      "type": "directory",
+      "description": "Субмодули апстрима: basic-pitch, eigen, libnyquist, libremidi, onnxruntime",
+      "tags": [
+        "vendor"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/web/app.js",
+      "type": "file",
+      "description": "Веб-демо апстрима: интерфейс",
+      "tags": [
+        "js",
+        "wasm"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/web/basicpitch.js"
+      ],
+      "hash": "sha256:e6c58067e0d7"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/web/basicpitch.js",
+      "type": "file",
+      "description": "Веб-демо: обёртка WASM",
+      "tags": [
+        "js",
+        "wasm"
+      ],
+      "dependencies": [],
+      "hash": "sha256:e69b2dd21e52"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/web/index.html",
+      "type": "file",
+      "description": "Веб-демо: страница",
+      "tags": [
+        "js",
+        "wasm"
+      ],
+      "dependencies": [],
+      "hash": "sha256:be2fd1ed8f7a"
+    },
+    {
+      "path": "basicpitch/src/basicpitch.cpp/web/worker.js",
+      "type": "file",
+      "description": "Веб-демо: рабочий поток",
+      "tags": [
+        "js",
+        "wasm"
+      ],
+      "dependencies": [],
+      "hash": "sha256:031d4f1e2542"
+    },
+    {
+      "path": "basicpitch/src/libv2m/CMakeLists.txt",
+      "type": "file",
+      "description": "Сборка libv2m.so (ядро + JNI + захват)",
+      "tags": [
+        "build",
+        "cmake"
+      ],
+      "dependencies": [],
+      "hash": "sha256:cb2aa238fafe"
+    },
+    {
+      "path": "basicpitch/src/libv2m/libv2m.cpp",
+      "type": "file",
+      "description": "Реализация C-API: параметры по умолчанию, прогон, обработка",
+      "tags": [
+        "cpp",
+        "api"
+      ],
+      "dependencies": [
+        "basicpitch/src/libv2m/v2m.h"
+      ],
+      "hash": "sha256:5d91e02a14cd"
+    },
+    {
+      "path": "basicpitch/src/libv2m/v2m.h",
+      "type": "file",
+      "description": "C-API ядра: транскрипция, спектрограмма, обработка аудио, параметры",
+      "tags": [
+        "cpp",
+        "api"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/basicpitch.hpp"
+      ],
+      "hash": "sha256:bcfa85082d23"
+    },
+    {
+      "path": "basicpitch/src/libv2m/v2m_capture.cpp",
+      "type": "file",
+      "description": "Захват звука ALSA для GUI (нативный слой записи)",
+      "tags": [
+        "cpp",
+        "audio"
+      ],
+      "dependencies": [
+        "basicpitch/src/libv2m/v2m_capture.h"
+      ],
+      "hash": "sha256:fa1f93b29243"
+    },
+    {
+      "path": "basicpitch/src/libv2m/v2m_capture.h",
+      "type": "file",
+      "description": "Интерфейс нативного захвата звука",
+      "tags": [
+        "cpp",
+        "audio"
+      ],
+      "dependencies": [],
+      "hash": "sha256:9ba228f7ad69"
+    },
+    {
+      "path": "basicpitch/src/libv2m/v2m_jni.cpp",
+      "type": "file",
+      "description": "JNI-мост для Kotlin: params_from_doubles, отчёт, спектрограмма, захват",
+      "tags": [
+        "cpp",
+        "api",
+        "jni"
+      ],
+      "dependencies": [
+        "basicpitch/src/libv2m/v2m.h"
+      ],
+      "hash": "sha256:de3920e19769"
+    },
+    {
+      "path": "basicpitch/src/midi2musicxml/CMakeLists.txt",
+      "type": "file",
+      "description": "Сборка конвертера",
+      "tags": [
+        "build",
+        "cmake"
+      ],
+      "dependencies": [],
+      "hash": "sha256:c21371ea879f"
+    },
+    {
+      "path": "basicpitch/src/midi2musicxml/midi2musicxml.cpp",
+      "type": "file",
+      "description": "Конвертер MIDI → MusicXML (C++17, без зависимостей)",
+      "tags": [
+        "cpp",
+        "export"
+      ],
+      "dependencies": [
+        "basicpitch/src/libv2m/v2m.h"
+      ],
+      "hash": "sha256:b8559143a923"
+    },
+    {
+      "path": "data",
+      "type": "directory",
+      "description": "Музыка и данные экспериментов: wav-входы, эталонные .mid, БД опыта, скрипты exp/ — в .gitignore",
+      "tags": [
+        "data"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "docs",
+      "type": "directory",
+      "description": "Документация: журнал работ, требования, находки, беклог, описание GUI",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "docs/2026-09-02_research_local-llm-melodic-learning.md",
+      "type": "file",
+      "description": "Исследование: локальное дообучение LLM для мелодического взаимодействия",
+      "tags": [
+        "docs",
+        "research"
+      ],
+      "dependencies": [],
+      "hash": "sha256:65f24e0bac78"
+    },
+    {
+      "path": "docs/260908_kpm_libs_considerations.md",
+      "type": "file",
+      "description": "Рассмотрение платформенных библиотек (KMP, аудио, каналы поступления звука)",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [],
+      "hash": "sha256:a7c64c0a61eb"
+    },
+    {
+      "path": "docs/260908_traning_flow_structure_01.md",
+      "type": "file",
+      "description": "Структура потока обучения (черновик)",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [],
+      "hash": "sha256:dde6b4538fc8"
+    },
+    {
+      "path": "docs/260910_voices_and_frames_considerations.md",
+      "type": "file",
+      "description": "Соображения о голосах и кадрах модели",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [],
+      "hash": "sha256:53f0f38ff1a4"
+    },
+    {
+      "path": "docs/backlog.md",
+      "type": "file",
+      "description": "Отложенные задачи OQ-NN: гаммы, мультиголосие, гармонизация, форматы входа",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [
+        "docs/open_questions.md"
+      ],
+      "hash": "sha256:f54f67fb9c36"
+    },
+    {
+      "path": "docs/brd.md",
+      "type": "file",
+      "description": "Требования Р-NN (продуктовые) и Т-NN (технические); подвал — лист регистрации изменений",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [
+        "docs/history.md"
+      ],
+      "hash": "sha256:bc2d9cdba0c5"
+    },
+    {
+      "path": "docs/history.md",
+      "type": "file",
+      "description": "Журнал хода работ по датам, новые записи в начало; запись на каждый билд #N",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [
+        "basicpitch/src/basicpitch.cpp/src/basicpitch.hpp"
+      ],
+      "hash": "sha256:3e388f8bb0dd"
+    },
+    {
+      "path": "docs/notes.md",
+      "type": "file",
+      "description": "Заметки сессий: дословные формулировки запросов А.М. и разборы",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [],
+      "hash": "sha256:c9bd14ed0d30"
+    },
+    {
+      "path": "docs/open_questions.md",
+      "type": "file",
+      "description": "Находки и вопросы OQ-NN, таблица «ручек»-кандидатов в коде ядра",
+      "tags": [
+        "docs"
+      ],
+      "dependencies": [
+        "docs/backlog.md"
+      ],
+      "hash": "sha256:399009712d99"
+    },
+    {
+      "path": "docs/ui-review.md",
+      "type": "file",
+      "description": "Замечания и рекомендации по общему стилю приложения",
+      "tags": [
+        "docs",
+        "gui"
+      ],
+      "dependencies": [
+        "docs/ui.md"
+      ],
+      "hash": "sha256:bc4c52ca9681"
+    },
+    {
+      "path": "docs/ui.md",
+      "type": "file",
+      "description": "Фактическое описание GUI (экраны, состояние, prefs) — справочник для агентов",
+      "tags": [
+        "docs",
+        "gui"
+      ],
+      "dependencies": [
+        "app/desktopApp/src/desktopMain/kotlin/com/v2m/app/App.kt"
+      ],
+      "hash": "sha256:b79f465f5fea"
+    },
+    {
+      "path": "libs",
+      "type": "directory",
+      "description": "Клоны библиотек-кандидатов (lomse, verovio) — в .gitignore, в репозиторий не входят",
+      "tags": [
+        "vendor"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "tools",
+      "type": "directory",
+      "description": "Вспомогательные утилиты (rec — проверка захвата звука)",
+      "tags": [
+        "tool"
+      ],
+      "dependencies": [],
+      "hash": null
+    },
+    {
+      "path": "tools/rec/Makefile",
+      "type": "file",
+      "description": "Сборка утилиты rec",
+      "tags": [
+        "build"
+      ],
+      "dependencies": [
+        "tools/rec/rec.c"
+      ],
+      "hash": "sha256:b43fcfb9644c"
+    },
+    {
+      "path": "tools/rec/rec.c",
+      "type": "file",
+      "description": "Утилита записи PCM в стиле v2m (проверка захвата без GUI)",
+      "tags": [
+        "c",
+        "tool"
+      ],
+      "dependencies": [
+        "basicpitch/src/libv2m/v2m_capture.cpp"
+      ],
+      "hash": "sha256:f5c68deeb09c"
+    }
+  ]
+}

@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>v2m — транскриптор мелодий</title>
+<meta name="description" content="v2m превращает звук в ноты: запись с микрофона или файл WAV — в MIDI, ABC-нотацию и MusicXML. Полифоническая транскрипция мелодии офлайн, на вашем компьютере, без регистрации и облака. Бесплатная версия для Linux.">
+<meta name="keywords" content="конвертер аудио в MIDI, голос в ноты, распознавание нот, транскрипция мелодии, ноты из песни, WAV в MIDI, ABC нотация, MIDI из вокала, полифоническая транскрипция, ноты на слух, определить ноты, спектрограмма звука, ноты для фортепиано, ноты для гитары, MusicXML, транскриптор мелодий, офлайн, Linux">
+<meta name="author" content="attplus.in">
+<meta property="og:title" content="v2m — транскриптор мелодий">
+<meta property="og:description" content="Звук в ноты: микрофон или WAV — в MIDI, ABC и MusicXML. Офлайн, на вашем компьютере.">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --paper:    #f2f4f0;
+    --surface:  #ffffff;
+    --ink:      #16201b;
+    --muted:    #64736a;
+    --line:     #d5ddd6;
+    --green:    #2e7d4f;
+    --green-dk: #1f5c39;
+    --blue:     #2f6fa8;
+    --deep:     #0e1613;
+    --deep-ink: #e8efe9;
+
+    --step-0: 1rem;
+    --step-1: 1.2rem;
+    --step-2: 1.55rem;
+    --step-3: 2.05rem;
+    --step-4: clamp(2.3rem, 6vw, 3.6rem);
+
+    --gap: clamp(1rem, 3vw, 2rem);
+    --pad-block: clamp(3rem, 8vw, 6rem);
+    --radius: 10px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:    #0c1310;
+      --surface:  #131d18;
+      --ink:      #e8efe9;
+      --muted:    #93a59a;
+      --line:     #26332c;
+      --green:    #5fbf84;
+      --green-dk: #7fd39f;
+      --blue:     #6ba6d8;
+      --deep:     #070c0a;
+      --deep-ink: #e8efe9;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:    #0c1310;
+    --surface:  #131d18;
+    --ink:      #e8efe9;
+    --muted:    #93a59a;
+    --line:     #26332c;
+    --green:    #5fbf84;
+    --green-dk: #7fd39f;
+    --blue:     #6ba6d8;
+    --deep:     #070c0a;
+    --deep-ink: #e8efe9;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Golos Text", "Segoe UI", system-ui, sans-serif;
+    font-size: var(--step-0);
+    line-height: 1.6;
+    padding: 0 max(16px, 4vw);
+    padding-block: 0;
+  }
+
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  h1, h2, h3 {
+    font-family: "Unbounded", "Golos Text", system-ui, sans-serif;
+    font-weight: 600;
+    line-height: 1.15;
+    text-wrap: balance;
+    margin: 0;
+  }
+  h1 { font-size: var(--step-4); letter-spacing: -0.02em; }
+  h2 { font-size: var(--step-3); letter-spacing: -0.01em; }
+  h3 { font-size: var(--step-1); }
+  p  { margin: 0; }
+
+  .mono {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.86em;
+  }
+
+  /* — шапка — */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--gap);
+    flex-wrap: wrap;
+    padding-block: 1.6rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    font-family: "Unbounded", system-ui, sans-serif;
+    font-weight: 700;
+    font-size: 1.3rem;
+    letter-spacing: -0.02em;
+  }
+  .brand small {
+    display: block;
+    font-family: "Golos Text", system-ui, sans-serif;
+    font-weight: 400;
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .lang { display: flex; gap: 0.4rem; align-items: center; }
+  .lang a {
+    color: var(--muted);
+    text-decoration: none;
+    padding: 0.3rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid transparent;
+  }
+  .lang a[aria-current="true"] {
+    color: var(--ink);
+    border-color: var(--line);
+    background: var(--surface);
+  }
+  .lang a:hover { border-color: var(--line); }
+
+  /* — герой — */
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: clamp(1.5rem, 4vw, 3rem);
+    align-items: center;
+    padding-block: clamp(2.5rem, 7vw, 5rem);
+  }
+  @media (max-width: 780px) { .hero { grid-template-columns: 1fr; } }
+
+  .hero .lead {
+    font-size: var(--step-1);
+    color: var(--muted);
+    max-width: 46ch;
+    margin-top: 1.1rem;
+  }
+  .eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--green);
+    margin-bottom: 1rem;
+  }
+
+  .cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.9rem;
+    align-items: center;
+    margin-top: 2rem;
+  }
+  .btn {
+    display: inline-block;
+    background: var(--green);
+    color: #fff;
+    font-weight: 600;
+    text-decoration: none;
+    padding: 0.85rem 1.5rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--green-dk);
+  }
+  .btn:hover { background: var(--green-dk); }
+  .btn.secondary {
+    background: transparent;
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  .btn.secondary:hover { border-color: var(--green); color: var(--green); }
+  .cta-note { color: var(--muted); font-size: 0.88rem; }
+
+  /* — иллюстрация «звук → ноты» — */
+  .figure { margin: 0; }
+  .figure canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .figure figcaption {
+    color: var(--muted);
+    font-size: 0.82rem;
+    margin-top: 0.6rem;
+  }
+
+  /* — секции — */
+  section { padding-block: var(--pad-block); border-top: 1px solid var(--line); }
+  .section-head { max-width: 62ch; margin-bottom: clamp(1.5rem, 4vw, 2.5rem); }
+  .section-head p { color: var(--muted); margin-top: 0.8rem; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: var(--gap);
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1.3rem 1.3rem 1.4rem;
+  }
+  .card h3 { margin-bottom: 0.5rem; }
+  .card p { color: var(--muted); font-size: 0.94rem; }
+  .card .tag {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--blue);
+    display: block;
+    margin-bottom: 0.7rem;
+  }
+
+  /* — снимок интерфейса — */
+  .shot {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr);
+    gap: clamp(1.5rem, 4vw, 3rem);
+    align-items: center;
+  }
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--deep);
+  }
+  .shot ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1rem; }
+  .shot li { color: var(--muted); font-size: 0.94rem; }
+  .shot li strong { display: block; color: var(--ink); font-weight: 600; margin-bottom: 0.15rem; }
+  @media (max-width: 760px) { .shot { grid-template-columns: minmax(0, 1fr); } }
+
+  /* — шаги — */
+  .steps { display: grid; gap: var(--gap); counter-reset: step; }
+  .step {
+    display: grid;
+    grid-template-columns: 2.4rem minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+  }
+  .step::before {
+    counter-increment: step;
+    content: counter(step);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.95rem;
+    color: var(--green);
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    width: 2.4rem;
+    height: 2.4rem;
+    display: grid;
+    place-items: center;
+    background: var(--surface);
+  }
+  .step p { color: var(--muted); }
+  pre {
+    background: var(--deep);
+    color: var(--deep-ink);
+    padding: 0.9rem 1.1rem;
+    border-radius: var(--radius);
+    overflow-x: auto;
+    margin: 0.7rem 0 0;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  code { font-family: "JetBrains Mono", monospace; font-size: 0.88em; }
+
+  /* — требования — */
+  .specs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--gap);
+  }
+  .spec {
+    border-top: 2px solid var(--green);
+    padding-top: 0.9rem;
+  }
+  .spec dt {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.74rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .spec dd { margin: 0.35rem 0 0; font-size: 1rem; }
+
+  /* — кому пригодится — */
+  .uses { display: grid; gap: 0.9rem; max-width: 70ch; }
+  .uses li { color: var(--muted); }
+  .uses li strong { color: var(--ink); font-weight: 600; }
+  ul.uses { padding-left: 1.2rem; margin: 0; }
+
+  /* — подвал — */
+  footer {
+    background: var(--deep);
+    color: var(--deep-ink);
+    margin-inline: calc(-1 * max(16px, 4vw));
+    padding-inline: max(16px, 4vw);
+    padding-block: clamp(2.5rem, 6vw, 4rem);
+    margin-top: var(--pad-block);
+  }
+  footer a { color: var(--deep-ink); }
+  footer .cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--gap);
+  }
+  footer p, footer li { color: #a9b8ae; font-size: 0.9rem; }
+  footer h3 { font-size: 1rem; margin-bottom: 0.6rem; }
+  footer ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.35rem; }
+
+  a { color: var(--green); }
+  a:focus-visible, .btn:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700&family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+</head>
+<body>
+
+<header class="wrap">
+  <div class="brand">v2m<small>Транскриптор мелодий</small></div>
+  <nav class="lang" aria-label="Язык страницы">
+    <a href="index.html" aria-current="true" hreflang="ru">RU</a>
+    <a href="en.html" hreflang="en">EN</a>
+  </nav>
+</header>
+
+<main class="wrap">
+
+  <section class="hero" style="border-top:none">
+    <div>
+      <div class="eyebrow">Аудио → ноты → MIDI</div>
+      <h1>Спойте или сыграйте — получите ноты</h1>
+      <p class="lead">
+        v2m слушает запись — с микрофона или из файла WAV — и выписывает ноты:
+        полифоническую партию с высотой, длительностью и громкостью каждой ноты.
+        Результат видно на спектрограмме, можно поправить и выгрузить в MIDI,
+        ABC-нотацию или MusicXML.
+      </p>
+      <div class="cta-row">
+        <a class="btn" href="download/v2m-linux-x64-1.0.0.tar.gz" download>Скачать для Linux</a>
+        <a class="btn secondary" href="#how">Как запустить</a>
+      </div>
+      <p class="cta-note mono" style="margin-top:1rem">
+        Linux x86_64 · Java 17+ · 43 МБ · офлайн, без регистрации
+      </p>
+    </div>
+
+    <figure class="figure">
+      <canvas id="wave" width="1000" height="560" role="img"
+              aria-label="Схема: звуковая волна и спектрограмма превращаются в нотный стан с нотами"></canvas>
+      <figcaption>Спектрограмма записи и ноты, которые из неё получаются, — так это выглядит в программе.</figcaption>
+    </figure>
+  </section>
+
+  <section id="what">
+    <div class="section-head">
+      <h2>Что умеет</h2>
+      <p>Один инструмент на весь путь от звука до нотной записи — без облака, всё считается на вашем компьютере.</p>
+    </div>
+    <div class="cards">
+      <article class="card">
+        <span class="tag">Вход</span>
+        <h3>Микрофон и WAV</h3>
+        <p>Запись с отсчётом «-0:01…0:00» прямо в программе или файл WAV с диска. Формат 22 050 Гц — родной для модели распознавания.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Распознавание</span>
+        <h3>Полифоническая транскрипция</h3>
+        <p>Слышит несколько нот одновременно: аккорды, интервалы, многоголосие. Определяет высоту, начало, длительность и громкость каждой ноты.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Разбор</span>
+        <h3>Спектрограмма</h3>
+        <p>Видно, из чего сложился результат: кадры спектрограммы, границы нот, четыре цветовые гаммы, диапазон и масштаб по времени.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Правка</span>
+        <h3>Редактор нот и версии</h3>
+        <p>Ноты можно править, отключать и сравнивать версии обработки: слышно, что изменилось после каждой настройки.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Выход</span>
+        <h3>MIDI, ABC, MusicXML</h3>
+        <p>Выгрузка в MIDI, MIDI с контекстом, ABC-нотацию и MusicXML — дальше в редактор нот, секвенсор или учебную тетрадь.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Настройка</span>
+        <h3>Ручки разбора</h3>
+        <p>Шумоподавитель, фильтры, компрессор-экспандер, ритмика, мелодика, гармонизация, тональность и размер, пресеты под инструмент.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="look">
+    <div class="section-head">
+      <h2>Как это выглядит</h2>
+      <p>Одно окно: запись или файл, ручки разбора и результат на вкладках «Спектр», «Кванты», «Тоны», «ABC».</p>
+    </div>
+    <div class="shot">
+      <img src="img/app.png" width="790" height="570" alt="Окно программы v2m: запись с микрофона, выбор файла WAV, ручки обработки и кнопки «Транскрипт» и «Экспорт»">
+      <ul>
+        <li><strong>Запись и файл</strong>Микрофон с отсчётом или WAV с диска — рядом кнопка «Сохранить».</li>
+        <li><strong>Ручки обработки</strong>Шумоподавитель, НЧ/ВЧ-фильтр, компрессор-экспандер, ритмика и мелодика — с пресетами под инструмент.</li>
+        <li><strong>Результат</strong>«Транскрипт» запускает разбор, «Экспорт» отдаёт MIDI, ABC или MusicXML.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="section-head">
+      <h2>Как запустить</h2>
+      <p>Три шага. Программа не устанавливается в систему: распакуйте архив в любую папку и запустите.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div>
+          <h3>Скачайте архив</h3>
+          <p>Внутри — программа и все библиотеки, включая ядро распознавания. Интернет при работе не нужен.</p>
+          <p class="mono" style="margin-top:0.5rem">
+            <a href="download/v2m-linux-x64-1.0.0.tar.gz" download>v2m-linux-x64-1.0.0.tar.gz</a> · 43 МБ
+          </p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Распакуйте</h3>
+          <pre>tar -xzf v2m-linux-x64-1.0.0.tar.gz
+cd v2m-linux-x64-1.0.0</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Запустите</h3>
+          <pre>./run.sh</pre>
+          <p style="margin-top:0.6rem">Скрипт сам проверит, что Java на месте, и подскажет, если её нужно поставить.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="specs">
+    <div class="section-head">
+      <h2>Что нужно</h2>
+    </div>
+    <dl class="specs">
+      <div class="spec">
+        <dt>Система</dt>
+        <dd>Linux x86_64</dd>
+      </div>
+      <div class="spec">
+        <dt>Java</dt>
+        <dd>17 или новее</dd>
+      </div>
+      <div class="spec">
+        <dt>Размер</dt>
+        <dd>43 МБ (архив), ~64 МБ после распаковки</dd>
+      </div>
+      <div class="spec">
+        <dt>Интернет</dt>
+        <dd>Не требуется</dd>
+      </div>
+      <div class="spec">
+        <dt>Цена</dt>
+        <dd>Бесплатно</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section id="uses">
+    <div class="section-head">
+      <h2>Кому пригодится</h2>
+      <p>Всюду, где мелодия уже звучит, а нот ещё нет.</p>
+    </div>
+    <ul class="uses">
+      <li><strong>Разобрать песню.</strong> Конвертер аудио в MIDI: запись или наигранная партия превращается в ноты и MIDI-файл для дальнейшей работы.</li>
+      <li><strong>Записать мелодию голосом.</strong> Голос в ноты: спетая фраза становится нотной строкой — удобно, когда инструмента под рукой нет.</li>
+      <li><strong>Снять соло или аккорды на слух.</strong> Полифоническая транскрипция показывает все ноты сразу, включая одновременные.</li>
+      <li><strong>Учить и учить музыке.</strong> Видно, как запись соотносится с нотами: спектрограмма рядом с партией и ABC-нотацией.</li>
+      <li><strong>Готовить нотную запись.</strong> MusicXML открывается в нотных редакторах, MIDI — в секвенсорах, ABC — в текстовом виде для правок.</li>
+      <li><strong>Работать без облака.</strong> Аудио не покидает ваш компьютер: ни загрузок на сервер, ни регистрации, ни подписки.</li>
+    </ul>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap cols">
+    <div>
+      <h3>v2m — транскриптор мелодий</h3>
+      <p>Аудио в ноты и MIDI. Разработчик — <a href="http://attplus.in/v2m">attplus.in</a>.</p>
+    </div>
+    <div>
+      <h3>Скачать</h3>
+      <ul>
+        <li><a href="download/v2m-linux-x64-1.0.0.tar.gz" download>Linux x86_64 · tar.gz · 43 МБ</a></li>
+        <li><a href="en.html">English page</a></li>
+      </ul>
+    </div>
+    <div>
+      <h3>Технологии</h3>
+      <ul>
+        <li>Ядро — C++-порт basicpitch.cpp (MIT)</li>
+        <li>Алгоритм-основа — Basic Pitch (Spotify, Apache 2.0)</li>
+        <li>Интерфейс — Kotlin, Compose Desktop</li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Иллюстрация «звук → ноты»: слева спектрограмма, справа тот же материал,
+// записанный нотами. Рисуется сразу при загрузке; данные детерминированы.
+(function () {
+  const cv = document.getElementById('wave');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+
+  function css(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  // Псевдослучайный ряд с постоянным зерном — картинка одна и та же при каждом показе.
+  let seed = 20260921;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+
+  function draw() {
+    const ink = css('--ink') || '#16201b';
+    const green = css('--green') || '#2e7d4f';
+    const blue = css('--blue') || '#2f6fa8';
+    const line = css('--line') || '#d5ddd6';
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = css('--surface') || '#fff';
+    ctx.fillRect(0, 0, W, H);
+
+    // — спектрограмма: 64 столбика, высота по «энергии» —
+    const bars = 64, bw = (W * 0.46) / bars, base = H - 80;
+    for (let i = 0; i < bars; i++) {
+      const env = Math.exp(-Math.pow((i - 20) / 22, 2)) * 0.8 + Math.exp(-Math.pow((i - 44) / 14, 2)) * 0.6;
+      const h = Math.max(6, (env * 0.75 + rnd() * 0.35) * (H - 180));
+      const mix = i / bars;
+      ctx.fillStyle = mix < 0.5 ? green : blue;
+      ctx.globalAlpha = 0.25 + 0.6 * (h / (H - 180));
+      ctx.fillRect(14 + i * bw, base - h, bw * 0.72, h);
+    }
+    ctx.globalAlpha = 1;
+
+    // — переход: из звука в запись —
+    const mx = W * 0.5;
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 8]);
+    ctx.beginPath();
+    ctx.moveTo(mx, 40);
+    ctx.lineTo(mx, H - 40);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // — нотный стан: пять линий —
+    const sx = W * 0.56, sw = W * 0.4, gap = 34, top = H / 2 - gap * 2;
+    ctx.strokeStyle = ink;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath();
+      ctx.moveTo(sx, top + i * gap);
+      ctx.lineTo(sx + sw, top + i * gap);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // — ноты: ступени стана и длительности —
+    const notes = [
+      { x: 0.06, step: 4, len: 1.6 }, { x: 0.22, step: 3, len: 0.9 },
+      { x: 0.34, step: 5, len: 0.9 }, { x: 0.46, step: 2, len: 1.6 },
+      { x: 0.62, step: 4, len: 0.9 }, { x: 0.74, step: 1, len: 2.4 },
+      { x: 0.9, step: 3, len: 1.2 }
+    ];
+    const noteW = 17, noteH = 12;
+    notes.forEach(n => {
+      const cx = sx + n.x * sw, cy = top + gap * 4 - n.step * (gap / 2);
+      ctx.fillStyle = ink;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, noteW, noteH, -0.32, 0, Math.PI * 2);
+      ctx.fill();
+      const stemUp = n.step < 4;
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(cx + (stemUp ? noteW - 2 : -noteW + 2), cy);
+      ctx.lineTo(cx + (stemUp ? noteW - 2 : -noteW + 2), cy - (stemUp ? 1 : -1) * 58);
+      ctx.stroke();
+      // длительность: флажок у коротких нот
+      if (n.len < 1.5) {
+        const fx = cx + (stemUp ? noteW - 2 : -noteW + 2);
+        const fy = cy - (stemUp ? 58 : -58);
+        ctx.beginPath();
+        ctx.moveTo(fx, fy);
+        ctx.quadraticCurveTo(fx + 20, fy + 14, fx + 6, fy + 34);
+        ctx.stroke();
+      }
+    });
+
+    // — подписи половин —
+    ctx.fillStyle = css('--muted') || '#64736a';
+    ctx.font = '500 20px "JetBrains Mono", monospace';
+    ctx.fillText('спектрограмма', 14, H - 40);
+    ctx.fillText('нотная запись', sx, H - 40);
+  }
+
+  draw();
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  }
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+})();
+</script>
+
+</body>
+</html>

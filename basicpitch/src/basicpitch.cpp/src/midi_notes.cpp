@@ -416,12 +416,16 @@ note_events_to_midi(const std::vector<basic_pitch::NoteEvent> &note_events,
     std::vector<float> frame_times = model_frames_to_time(n_times_onsets);
 
     // Rhythm grid for snapping note boundaries (empty when rhythm is off).
-    // The grid starts at the first note, and tick time 0 is its first point —
-    // so the first note opens the file (no leading rest in the output).
+    // Tick time 0 is the start of the material: the grid only snaps note
+    // positions (Т02: its phase is aligned to the attacks, see
+    // rhythm_grid/align_grid_phase), it does not shift the time axis.
+    // Билд #52 (п.2 приёмки #51): раньше ticks отсчитывались от первой
+    // точки сетки (grid_origin), и ведущая пауза записи пропадала — MIDI
+    // звучал сразу, а спектрограмма показывала тишину; теперь тики идут от
+    // начала материала, MIDI синхронен аудио.
     const std::vector<float> grid =
         rhythm_result.subdivision > 0 ? basic_pitch::rhythm_grid(rhythm_result)
                                       : std::vector<float>{};
-    const float grid_origin = grid.empty() ? 0.0f : grid.front();
     auto snap_to_grid = [&grid](float t) -> float
     {
         if (grid.empty())
@@ -459,8 +463,6 @@ note_events_to_midi(const std::vector<basic_pitch::NoteEvent> &note_events,
     {
         float start_time = snap_to_grid(frame_times[start_idx]);
         float end_time = snap_to_grid(frame_times[end_idx]);
-        start_time -= grid_origin; // ticks count from the first grid point
-        end_time -= grid_origin;
         uint32_t start_tick = time_to_ticks(start_time, tempo_us, tpqn);
         uint32_t end_tick = time_to_ticks(end_time, tempo_us, tpqn);
         int velocity = static_cast<int>(amplitude * 127);
@@ -609,6 +611,9 @@ std::vector<uint8_t> basic_pitch::convert_to_midi(
     std::vector<basic_pitch::NoteEvent> note_events =
         output_to_notes_polyphonic(inference_result, use_melodia_trick,
                                    include_pitch_bends, params);
+    // Chronological order is assumed downstream (rhythm analysis takes note
+    // starts in time order); fragment detection may leave the vector unsorted.
+    std::sort(note_events.begin(), note_events.end());
 
     // Harmonization (OQ-06): merge vibrato fragments, drop small bends,
     // estimate the global detune reference
@@ -616,6 +621,19 @@ std::vector<uint8_t> basic_pitch::convert_to_midi(
     {
         basic_pitch::merge_note_fragments(note_events,
                                           harmonize.merge_semitones);
+    }
+    // «Стабильность питча» (билд #55, Р19): звучание коротких нот-выбросов по
+    // медиане высот соседей присоединяется к основной ноте — после слияния
+    // фрагментов, но до бендов, глобального сдвига и лада (они должны видеть
+    // уже чистый список)
+    if (harmonize.pitch_median_window >= 3)
+    {
+        const int attached = basic_pitch::stabilize_note_pitches(
+            note_events, harmonize.pitch_median_window,
+            basic_pitch::constants::MAX_STAB_NOTE_FRAMES);
+        log_verbose("pitch median: window " +
+                    std::to_string(harmonize.pitch_median_window) + ", attached " +
+                    std::to_string(attached) + " notes");
     }
     if (harmonize.min_bend_bins > 0)
     {
