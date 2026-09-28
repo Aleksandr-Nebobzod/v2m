@@ -60,6 +60,11 @@ jobs:
         Invoke-WebRequest -Uri "https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip" -OutFile "eigen.zip"
         Expand-Archive -Path "eigen.zip" -DestinationPath "."
 
+- name: Download libremidi (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        git clone --depth 1 --branch v4.5.0 https://github.com/jcelerier/libremidi.git
+
 
     # --- 2. КОМПИЛЯЦИЯ C++ (libv2m) ---
     - name: Compile libv2m (Linux)
@@ -67,21 +72,16 @@ jobs:
       working-directory: basicpitch/src/libv2m
       run: |
         mkdir -p build && cd build
-        cmake -DCMAKE_CXX_FLAGS="-I/usr/include/eigen3 -I${JAVA_HOME}/include/linux" ..
+        cmake -DCMAKE_CXX_FLAGS="-I/usr/include/eigen3 -I${GITHUB_WORKSPACE}/libremidi/include -I${JAVA_HOME}/include/linux" ..
         make
 
-    - name: Compile libv2m (Windows)
-      if: runner.os == 'Windows'
+    - name: Compile libv2m (Linux)
+      if: runner.os == 'Linux'
       working-directory: basicpitch/src/libv2m
-      shell: pwsh
       run: |
-        New-Item -ItemType Directory -Path "build" -Force | Out-Null
-        Set-Location build
-        $eigenPath = "${env:GITHUB_WORKSPACE}\eigen-3.4.0"
-        $jniWinPath = "${env:JAVA_HOME}\include\win32"
-        $cmakeFlags = "/I`"$eigenPath`" /I`"$jniWinPath`""
-        cmake -DCMAKE_CXX_FLAGS=$cmakeFlags ..
-        cmake --build . --config Release
+        mkdir -p build && cd build
+        cmake -DCMAKE_CXX_FLAGS="-I/usr/include/eigen3 -I${GITHUB_WORKSPACE}/libremidi/include -I${JAVA_HOME}/include/linux" ..
+        make
 
     # --- 3. СБОРКА JAVA (UberJAR) ---
     - name: Make gradlew executable (Linux)
