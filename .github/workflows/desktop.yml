@@ -197,6 +197,18 @@ jobs:
             Write-Host "::warning::NDK 27.0.12077973 отсутствует — AGP доустановит его сам (~1 ГБ, несколько минут)"
           }
 
+      - name: Версия MSVC (диагностика)
+        shell: pwsh
+        run: |
+          # Версия набора инструментов видна в логе и в аннотации при падении
+          # сборки: у windows-latest она меняется вместе с образом раннера.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (!(Test-Path $vswhere)) { Write-Host "vswhere не найден"; exit 0 }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $tools = Get-ChildItem "$vs\VC\Tools\MSVC" -Directory | Select-Object -ExpandProperty Name
+          Write-Host "MSVC: $($tools -join ', ')"
+          "MSVC=$($tools -join ',')" >> $env:GITHUB_ENV
+
       - name: Ядро libv2m
         shell: pwsh
         run: |
@@ -208,8 +220,31 @@ jobs:
             -DV2M_ORT_LIB="$env:ORT_DIR\lib\onnxruntime.lib" `
             -DV2M_ORT_INCLUDE="$env:ORT_DIR\include"
           if ($LASTEXITCODE -ne 0) { throw "cmake: конфигурация не удалась" }
-          cmake --build basicpitch/src/libv2m/build --config Release --parallel
-          if ($LASTEXITCODE -ne 0) { throw "cmake: сборка не удалась" }
+          # Вывод сборки идёт и в лог шага, и в файл: при падении окно строк
+          # вокруг первой ошибки уходит одной аннотацией — её видно в разделе
+          # проверок, не выгружая лог (лог доступен только с входом в GitHub).
+          # Поток stderr MSVC не должен считаться ошибкой PowerShell.
+          $PSNativeCommandUseErrorActionPreference = $false
+          cmake --build basicpitch/src/libv2m/build --config Release --parallel 2>&1 |
+            Tee-Object -FilePath "$env:RUNNER_TEMP\build.log"
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $lines = @(Get-Content "$env:RUNNER_TEMP\build.log")
+            $i = -1
+            for ($k = 0; $k -lt $lines.Count; $k++) {
+              if ($lines[$k] -match 'error C\d{3,4}|fatal error') { $i = $k; break }
+            }
+            if ($i -lt 0) { $i = $lines.Count - 1 }
+            $from = [Math]::Max(0, $i - 20)
+            $to = [Math]::Min($lines.Count - 1, $i + 10)
+            # Переводы строк в тексте команды аннотации кодируются как %0A,
+            # а знак % в самих строках — как %25 (порядок важен).
+            $window = $lines[$from..$to] | ForEach-Object { $_.Trim() } |
+              Where-Object { $_ } | ForEach-Object { $_ -replace '%', '%25' }
+            $msg = "MSVC=$env:MSVC" + '%0A' + ($window -join '%0A')
+            Write-Host "::error::$msg"
+            throw "cmake: сборка не удалась (код $code)"
+          }
           if (!(Test-Path "basicpitch\src\libv2m\build\v2m.dll")) {
             Get-ChildItem -Recurse "basicpitch\src\libv2m\build" -Filter *.dll | Select-Object FullName
             throw "v2m.dll не найден в корне каталога сборки"

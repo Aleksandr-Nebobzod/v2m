@@ -38,3 +38,6 @@ basicpitch/src/basicpitch.cpp/basicpitch
 
 # артефакты cmake upstream
 basicpitch/src/basicpitch.cpp/CTestTestfile.cmake
+
+# рабочие деревья Claude Code (локальные, в репозиторий не входят)
+.claude/worktrees/

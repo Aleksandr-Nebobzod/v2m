@@ -112,6 +112,12 @@ if(MSVC)
     # использует ресемплер Oboe (MultiChannelResampler.cpp:148). Макрос задаём
     # строкой компиляции — так он определён до любого включения.
     target_compile_definitions(v2m PRIVATE _USE_MATH_DEFINES)
+    # Ресемплер Oboe объявляет int32_t/int64_t, ожидая их от <sys/types.h> — так
+    # это работает в glibc и NDK, но в UCRT MSVC типов фиксированной ширины этот
+    # заголовок не даёт, а <stdint.h> в наборе ресемплера не включён нигде
+    # (IntegerRatio.h:20, ошибка C2061 на строке 31). Подключаем принудительно —
+    # файлы vendor берутся из upstream и не правятся.
+    target_compile_options(v2m PRIVATE /FIstdint.h)
 endif()
 
 if(ANDROID)
