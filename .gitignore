@@ -25,6 +25,7 @@ basicpitch/src/basicpitch.cpp/vendor/
 # Временные файлы
 *.tmp
 
+.claude/
 .cxx/
 **/.cxx/
 
