@@ -4,6 +4,42 @@
 
 ## 2026-09-29
 
+### 01:06 · Windows: причина падения линковки — C-сцепление символов модели
+
+**Симптом** (прогон по коммиту `8d7a91e`): компиляция всех файлов прошла, падение
+на линковке — `LNK2019: unresolved external symbol "unsigned char const * const
+model_ort_start" (?model_ort_start@@3QBEB)`, то же для `model_ort_size`
+(`?model_ort_size@@3_KB`), затем `LNK1120: 2 unresolved externals`. Подсказка
+линкера «Hint on symbols that are defined and could potentially match:
+model_ort_start» — символ есть, но под другим именем.
+
+**Причина.** `model.ort.c` (C) определяет `model_ort_start`/`model_ort_size` с
+C-сцеплением, а `model.ort.h` объявлял их без `extern "C"`. MSVC мангляет имена
+глобальных переменных в C++ (`?model_ort_start@@3QBEB`), поэтому имена не
+совпали; в Itanium ABI (Linux, Android) имена глобальных переменных не манглятся,
+и там сборка проходила.
+
+**Правка.** `basicpitch/src/basicpitch.cpp/ort-model/model/model.ort.h` —
+объявления обёрнуты в `#ifdef __cplusplus` / `extern "C" { … }`. Правка внесена
+вручную: файл создан генератором `bin2c.py`, которого в репозитории нет (файл не
+перегенерируется).
+
+**Про `xutility(5604,24)` и `SincResamplerStereo.cpp(52,10)`.** Полный текст
+аннотации показал: это блок-примечание «see reference to function template
+instantiation … being compiled» при предупреждении C4244 (сужающее double→float
+в `std::fill(…, 0.0)`). Сборку оно не останавливает — в прогоне компиляция всех
+файлов завершилась и началась линковка.
+
+**Проверено локально:** сборка ядра — 0; `nm -D` показывает `model_ort_start` и
+`model_ort_size` в `libv2m.so`; самотест desktop (59 проверок, включая
+транскрипцию через JNI — создаётся сессия ONNX со встроенной моделью) — 0.
+
+**Диагностика сработала.** Текст ошибок MSVC получен из аннотации прогона без
+входа в GitHub (шаг «Версия MSVC»: наборы 14.29.30133, 14.44.35207, 14.51.36231;
+цель — x64, это видно по манглингу `unsigned __int64` для `size_t`).
+
+**Не проверено:** прогон Windows после правки.
+
 ### 00:43 · Windows: причина падения «Ядро libv2m» — int32_t из sys/types.h
 
 **Симптом** (лог прогона, шаг «Ядро libv2m»): `IntegerRatio.h(31,18): error C2061:
