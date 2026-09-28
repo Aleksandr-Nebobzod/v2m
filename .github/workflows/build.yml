@@ -76,7 +76,7 @@ jobs:
         working-directory: basicpitch/src/libv2m
         run: |
           mkdir -p build && cd build
-          cmake -DCMAKE_CXX_FLAGS="-I/usr/include/eigen3 -I${GITHUB_WORKSPACE}/libremidi/include -I${JAVA_HOME}/include/linux" ..
+          cmake -DCMAKE_CXX_FLAGS="-I/usr/include/eigen3 -I${GITHUB_WORKSPACE}/libremidi/include -I${JAVA_HOME}/include/linux -I${GITHUB_WORKSPACE}/onnx_deps/include" ..
           make
 
       - name: Compile libv2m (Windows)
@@ -86,8 +86,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path "build" -Force | Out-Null
           Set-Location build
-          $env:INCLUDE = "${env:GITHUB_WORKSPACE}\eigen-3.4.0;${env:GITHUB_WORKSPACE}\libremidi\include;${env:JAVA_HOME}\include\win32;${env:JAVA_HOME}\include;${env:INCLUDE}"
-          cmake ..
+          $flags = "/I`"${env:GITHUB_WORKSPACE}\eigen-3.4.0`" /I`"${env:GITHUB_WORKSPACE}\libremidi\include`" /I`"${env:JAVA_HOME}\include\win32`" /I`"${env:JAVA_HOME}\include`" /I`"${env:GITHUB_WORKSPACE}\onnx_deps\include`""
+          cmake -DCMAKE_CXX_FLAGS="$flags" ..
           cmake --build . --config Release
 
       # --- 4. СБОРКА JAVA (UberJAR) ---
