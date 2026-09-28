@@ -1,13 +1,13 @@
-name: Build Desktop Distributives
-
-# check#
+name: Build Portable Distributives
 
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
+
+env:
+  V2M_VERSION: "1.0.0"
+  ONNX_VERSION: "1.18.1"
 
 jobs:
   build:
@@ -22,42 +22,112 @@ jobs:
       with:
         submodules: false
 
-    - name: Set up JDK
+    - name: Set up JDK 17
       uses: actions/setup-java@v5
       with:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Make scripts executable (Linux)
+    # --- 1. ЗАГРУЗКА ONNX RUNTIME ---
+    - name: Download ONNX Runtime (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-x64-${ONNX_VERSION}.tgz"
+        tar -xzf "onnxruntime-linux-x64-${ONNX_VERSION}.tgz"
+        mkdir -p onnx_deps
+        cp -r "onnxruntime-linux-x64-${ONNX_VERSION}/include" onnx_deps/
+        cp -r "onnxruntime-linux-x64-${ONNX_VERSION}/lib" onnx_deps/
+
+    - name: Download ONNX Runtime (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v${env:ONNX_VERSION}/onnxruntime-win-x64-${env:ONNX_VERSION}.zip" -OutFile "onnx.zip"
+        Expand-Archive -Path "onnx.zip" -DestinationPath "."
+        New-Item -ItemType Directory -Path "onnx_deps" -Force | Out-Null
+        Copy-Item -Path "onnxruntime-win-x64-${env:ONNX_VERSION}\include" -Destination "onnx_deps\include" -Recurse
+        Copy-Item -Path "onnxruntime-win-x64-${env:ONNX_VERSION}\lib" -Destination "onnx_deps\lib" -Recurse
+
+    # --- 2. КОМПИЛЯЦИЯ C++ (libv2m) ---
+    - name: Compile libv2m (Linux)
+      if: runner.os == 'Linux'
+      working-directory: basicpitch/src/libv2m
+      run: |
+        mkdir -p build && cd build
+        cmake -DONNXRUNTIME_ROOT_DIR="${GITHUB_WORKSPACE}/onnx_deps" ..
+        make
+
+    - name: Compile libv2m (Windows)
+      if: runner.os == 'Windows'
+      working-directory: basicpitch/src/libv2m
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path "build" -Force | Out-Null
+        Set-Location build
+        cmake -DONNXRUNTIME_ROOT_DIR="${env:GITHUB_WORKSPACE}\onnx_deps" ..
+        cmake --build . --config Release
+
+    # --- 3. СБОРКА JAVA (UberJAR) ---
+    - name: Make gradlew executable (Linux)
       if: runner.os == 'Linux'
       working-directory: app
       run: chmod +x ./gradlew
 
-    - name: Build for Linux
+    - name: Build UberJAR (Linux)
       if: runner.os == 'Linux'
       working-directory: app
-      run: ./gradlew :desktopApp:packageDistributionForCurrentOS
+      run: ./gradlew :desktopApp:packageUberJarForCurrentOS --no-daemon
 
-    - name: Build for Windows
+    - name: Build UberJAR (Windows)
       if: runner.os == 'Windows'
       working-directory: app
-      run: .\gradlew.bat :desktopApp:packageDistributionForCurrentOS
+      shell: cmd
+      run: |
+        call gradlew.bat :desktopApp:packageUberJarForCurrentOS --no-daemon < NUL
 
-    # Загрузка Linux-дистрибутива из точной папки, которую вы указали
+    # --- 4. СБОРКА PORTABLE-АРХИВА ---
+    - name: Assemble Portable Package (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        DIST_DIR="dist/out/v2m-linux-x64-${V2M_VERSION}"
+        mkdir -p "$DIST_DIR/lib"
+        cp app/desktopApp/build/compose/jars/*.jar "$DIST_DIR/v2m-linux-x64-${V2M_VERSION}.jar"
+        cp basicpitch/src/libv2m/build/libv2m.so "$DIST_DIR/lib/" 2>/dev/null \
+          || cp basicpitch/src/libv2m/build/*.so "$DIST_DIR/lib/" 2>/dev/null \
+          || { echo "libv2m.so не найден"; ls -la basicpitch/src/libv2m/build/; exit 1; }
+        cp onnx_deps/lib/libonnxruntime.so* "$DIST_DIR/lib/"
+        cp run.sh "$DIST_DIR/"
+        chmod +x "$DIST_DIR/run.sh"
+        cd dist/out
+        tar -czvf "v2m-linux-x64-${V2M_VERSION}.tar.gz" "v2m-linux-x64-${V2M_VERSION}/"
+
+    - name: Assemble Portable Package (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $distDir = "dist\out\v2m-windows-x64-${env:V2M_VERSION}"
+        New-Item -ItemType Directory -Path "$distDir\lib" -Force | Out-Null
+        Copy-Item -Path "app\desktopApp\build\compose\jars\*.jar" -Destination "$distDir\v2m-windows-x64-${env:V2M_VERSION}.jar"
+        Copy-Item -Path "basicpitch\src\libv2m\build\Release\*.dll" -Destination "$distDir\lib\" -ErrorAction SilentlyContinue
+        Copy-Item -Path "basicpitch\src\libv2m\build\*.dll" -Destination "$distDir\lib\" -ErrorAction SilentlyContinue
+        Copy-Item -Path "onnx_deps\lib\*.dll" -Destination "$distDir\lib\"
+        Copy-Item -Path "run.bat" -Destination "$distDir\"
+        Set-Location "dist\out"
+        Compress-Archive -Path "v2m-windows-x64-${env:V2M_VERSION}" -DestinationPath "v2m-windows-x64-${env:V2M_VERSION}.zip"
+
+    # --- 5. ЗАГРУЗКА АРТЕФАКТОВ ---
     - name: Upload Linux Artifact
       if: runner.os == 'Linux'
       uses: actions/upload-artifact@v4
       with:
-        name: v2m-linux-x64-distributive
-        # Символ * подставит любую версию (например, 1.0.0 или 1.0.1)
-        path: dist/out/v2m-linux-x64-*/
+        name: v2m-linux-x64-portable
+        path: dist/out/v2m-linux-x64-${{ env.V2M_VERSION }}.tar.gz
         if-no-files-found: error
 
-    # Загрузка Windows-дистрибутива из аналогичной папки
     - name: Upload Windows Artifact
       if: runner.os == 'Windows'
       uses: actions/upload-artifact@v4
       with:
-        name: v2m-windows-x64-distributive
-        path: dist/out/v2m-windows-x64-*/
+        name: v2m-windows-x64-portable
+        path: dist/out/v2m-windows-x64-${{ env.V2M_VERSION }}.zip
         if-no-files-found: error
