@@ -8,6 +8,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Версия продукта в двух формах — единое место определения: v2m.version и
+// v2m.build в app/gradle.properties, сборка строк — в корневом build.gradle.kts
+// (extra «v2mVersion» — semver 1.0.60, «v2mVersionPadded» — 1.0.060).
+val v2mVersion = rootProject.extra["v2mVersion"] as String
+val v2mVersionPadded = rootProject.extra["v2mVersionPadded"] as String
+
 kotlin {
     jvm("desktop") {
         compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
@@ -30,8 +36,11 @@ compose.desktop {
         mainClass = "com.v2m.app.MainKt"
         nativeDistributions {
             targetFormats(org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb)
-            packageName = "v2m"
-            packageVersion = "1.0.0"
+            // Имя дистрибутива несёт версию с ведущими нулями (v2m_1.0.060) —
+            // рядом в системе уживаются сборки разных билдов; version — semver
+            // без ведущих нулей: поля версии в метаданных пакета — числа.
+            packageName = "v2m_$v2mVersionPadded"
+            packageVersion = v2mVersion
         }
     }
 }
@@ -58,7 +67,8 @@ val v2mArch = when (System.getProperty("os.arch")) {
     else -> System.getProperty("os.arch")
 }
 val v2mOsName = if (v2mIsWindows) "windows" else "linux"
-val v2mBundle = "v2m-${project.property("v2m.build")}-$v2mOsName-$v2mArch"
+// Имя комплекта — как у имени дистрибутива: версия продукта с ведущими нулями.
+val v2mBundle = "v2m_$v2mVersionPadded-$v2mOsName-$v2mArch"
 val v2mJarName = if (v2mIsWindows) "v2m.dll" else "libv2m.so"
 // Берём версионированные файлы (libonnxruntime.so.1.21.0): имя совпадает с
 // SONAME, который libv2m просит у загрузчика; ссылки копируются содержимым.
@@ -173,9 +183,19 @@ val packagePortable = tasks.register<PackagePortableTask>("packagePortable") {
         |Микрофон: Linux — захват через ALSA; в Windows-сборке захвата нет
         |(WASAPI не реализован), запись сообщит о недоступности.
         |
-        |Версия сборки: ${project.property("v2m.build")}
+        |Версия: $v2mVersionPadded (билд ${project.property("v2m.build")})
         """.trimMargin() + "\n"
     )
     portableDir.set(layout.buildDirectory.dir("compose/portable/$v2mBundle"))
     zipFile.set(layout.buildDirectory.file("compose/portable/$v2mBundle.zip"))
+}
+
+// Имя uber-jar содержит версию продукта (v2m-linux-x64-1.0.060.jar), поэтому
+// после её смены в каталоге остаётся jar прошлой сборки, и packagePortable
+// находит два файла. Чистим каталог перед сборкой; сам каталог оставляем —
+// задача плагина Compose его не создаёт (каталог внутри build/, не файлы
+// пользователя).
+tasks.matching { it.name == "packageUberJarForCurrentOS" }.configureEach {
+    val jarsDir = layout.buildDirectory.dir("compose/jars")
+    doFirst { jarsDir.get().asFile.listFiles()?.forEach { it.deleteRecursively() } }
 }

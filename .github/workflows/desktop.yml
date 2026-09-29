@@ -113,7 +113,7 @@ jobs:
           SELFTEST_WAV: ${{ vars.V2M_SELFTEST_WAV }}
         run: |
           set -eu
-          BUNDLE=$(ls -d app/desktopApp/build/compose/portable/v2m-*-linux-x64 2>/dev/null || true)
+          BUNDLE=$(ls -d app/desktopApp/build/compose/portable/v2m*-linux-x64 2>/dev/null || true)
           if [ -z "$BUNDLE" ]; then
             echo "::error::комплект не найден в app/desktopApp/build/compose/portable"
             exit 1
@@ -267,7 +267,7 @@ jobs:
           SELFTEST_WAV: ${{ vars.V2M_SELFTEST_WAV }}
         run: |
           $ErrorActionPreference = "Stop"
-          $bundle = (Get-ChildItem -Directory "app\desktopApp\build\compose\portable" -Filter "v2m-*-windows-x64").FullName
+          $bundle = (Get-ChildItem -Directory "app\desktopApp\build\compose\portable" -Filter "v2m*-windows-x64").FullName
           if (!$bundle) { throw "комплект не найден в app\desktopApp\build\compose\portable" }
           Write-Host "комплект: $bundle"
           Get-ChildItem $bundle | Select-Object Name, Length
@@ -316,6 +316,11 @@ jobs:
         run: |
           set -eu
           ls -l dist
-          gh release create "$GITHUB_REF_NAME" dist/*.zip \
+          # Комплекты приходят артефактами, checkout джобу не нужен — но тогда в
+          # рабочем каталоге нет git-репозитория, и gh не может определить
+          # репозиторий сам: команда падает с «failed to run git». Репозиторий
+          # задаём явно (--repo, формат owner/repo из GITHUB_REPOSITORY).
+          REPO="$GITHUB_REPOSITORY"
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$REPO" \
             --title "v2m $GITHUB_REF_NAME" --generate-notes \
-            || gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
+            || gh release upload "$GITHUB_REF_NAME" dist/*.zip --repo "$REPO" --clobber

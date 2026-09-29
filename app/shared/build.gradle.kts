@@ -22,13 +22,16 @@ val unpackOrt by tasks.registering(Copy::class) {
 }
 tasks.matching { it.name.contains("CMake") }.configureEach { dependsOn(unpackOrt) }
 
-// Номер билда (единое место — app/gradle.properties): кодогенерация Build.kt
-// в commonMain. Потребители — «О программе» (App.kt), заголовок окна (Main.kt),
-// журнал (Log.kt); versionCode :androidApp читает то же свойство.
+// Номер билда и версия продукта (единое место — app/gradle.properties): их
+// складывает корневой build.gradle.kts, здесь — кодогенерация Build.kt в
+// commonMain. Потребители — «О программе» (App.kt), заголовок окна (Main.kt),
+// журнал (Log.kt); versionCode :androidApp читает то же свойство v2m.build.
 val v2mBuild = (project.findProperty("v2m.build") as String).toInt()
+val v2mVersionPadded = rootProject.extra["v2mVersionPadded"] as String
 val generateBuild by tasks.registering {
     val outDir = layout.buildDirectory.dir("generated/build/kotlin")
     inputs.property("build", v2mBuild)
+    inputs.property("version", v2mVersionPadded)
     outputs.dir(outDir)
     doLast {
         val file = outDir.get().file("com/v2m/app/Build.kt").asFile
@@ -39,11 +42,20 @@ val generateBuild by tasks.registering {
             |
             |/** Номер билда = номер записи в docs/history.md, описывающей этот билд
             | *  (записи идут подзаголовками с датой/временем, см. «Ход работ»).
-            | *  Файл сгенерирован задачей generateBuild (:shared) из значения
-            | *  v2m.build в app/gradle.properties — там единое место определения
-            | *  (его же читает versionCode :androidApp). Показывается в «О программе»
-            | *  (App.kt), попадает в заголовок окна (Main.kt) и в журнал (Log.kt). */
+            | *  Файл сгенерирован задачей generateBuild (:shared) из значений
+            | *  v2m.build и v2m.version в app/gradle.properties — там единое место
+            | *  определения (номер билда же читает versionCode :androidApp).
+            | *  Показывается в «О программе» (App.kt), попадает в заголовок окна
+            | *  (Main.kt) и в журнал (Log.kt). */
             |const val BUILD = $v2mBuild
+            |
+            |/** Версия продукта с ведущими нулями (1.0.060 при билде 60): мажор и
+            | *  минор — v2m.version, третий сегмент — v2m.build тремя знаками.
+            | *  Показывается в «О программе» (App.kt); та же строка идёт в имена
+            | *  файлов сборки и в тег релиза (Т03 п.7). Semver-форма без ведущих
+            | *  нулей (1.0.60) — в packageVersion :desktopApp, в Kotlin-код она не
+            | *  попадает. */
+            |const val VERSION = "$v2mVersionPadded"
             |
             """.trimMargin()
         )

@@ -1759,7 +1759,7 @@ fun App(closeGuard: CloseGuard = CloseGuard()) {
                         title = { Text(Strings.menuAbout) },
                         text = {
                             Column {
-                                Text("v2m · билд #$BUILD", fontWeight = FontWeight.Bold)
+                                Text("v2m $VERSION · билд #$BUILD", fontWeight = FontWeight.Bold)
                                 Text(Strings.aboutText, style = MaterialTheme.typography.body2)
                                 Text(Strings.aboutDev, style = MaterialTheme.typography.body2,
                                     modifier = Modifier.padding(top = 8.dp))

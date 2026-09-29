@@ -13,6 +13,12 @@ plugins {
 // Номер билда — единое место определения в app/gradle.properties (оттуда же
 // его берёт Build.kt в :shared, см. generateBuild).
 val v2mBuild = (project.findProperty("v2m.build") as String).toInt()
+// Версия продукта (1.0.060 при v2m.build=60) — та же пара свойств, строки
+// собираются в корневом build.gradle.kts: «v2mVersionPadded» идёт в versionName
+// (имя версии для пользователя, ведущие нули допустимы), «v2mVersion» — semver
+// (у :desktopApp это packageVersion). Тег релиза совпадает с padded-формой
+// (Т03 п.7).
+val v2mVersionPadded = rootProject.extra["v2mVersionPadded"] as String
 
 android {
     namespace = "com.v2m.app.android"
@@ -23,7 +29,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = v2mBuild
-        versionName = "1.0.0"
+        versionName = v2mVersionPadded
         // Целевое устройство — arm64 (план, §6 п.2): отсекает .so прочих ABI,
         // которые тянет AAR ONNX Runtime.
         ndk { abiFilters += "arm64-v8a" }
