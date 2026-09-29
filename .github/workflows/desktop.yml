@@ -277,7 +277,11 @@ jobs:
           $env:PATH = "$bundle;$env:PATH"
           $jar = (Get-ChildItem "$bundle\*.jar").FullName
           $probe = "System.loadLibrary(`"v2m`");`nSystem.out.println(`"native-ok`");`n/exit"
-          $log = $probe | jshell -R-Djava.library.path="$bundle" --class-path "$jar" 2>&1 | Out-String
+          # Аргумент целиком в кавычках: PowerShell разбивает токен вида
+          # -Dимя.с.точками=значение по первой точке на два аргумента (дефект
+          # токенизатора PowerShell#6291/#15541), и jshell принимает второй
+          # фрагмент за имя файла сценария.
+          $log = $probe | jshell "-R-Djava.library.path=$bundle" --class-path "$jar" 2>&1 | Out-String
           Write-Host $log
           if ($log -notmatch "native-ok") { throw "нативная библиотека не загрузилась" }
           if ($env:SELFTEST_WAV -and (Test-Path $env:SELFTEST_WAV)) {
